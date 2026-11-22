@@ -100,7 +100,7 @@ def _labelled(rows: list[dict[str, Any]], period_column: str | None, period_type
 
 
 def _csv(names: list[str], rows: list[dict[str, Any]], period_column: str | None) -> str:
-    """One line per row, ISO dates and times, durations in seconds, and an empty cell for NULL."""
+    """One line per row, ISO dates and times, and an empty cell for NULL."""
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\n")
     columns = [
