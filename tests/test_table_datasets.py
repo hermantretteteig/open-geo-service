@@ -763,6 +763,14 @@ def test_a_period_ends_on_its_last_day(period_type: str | None, start: date, end
         ),
         ({"name": "written_at", "type": "timestamp"}, "declares 'written_at'"),
         ({"name": "lead", "type": "duration"}, "column 'lead' has type 'duration'"),
+        (
+            {"name": "day", "type": "date", "represents": "period_start"},
+            "'day' represents period_start, so it must be required and not nullable",
+        ),
+        (
+            {"name": "period", "type": "date", "required": True, "nullable": False, "represents": "period_start"},
+            r"declares \['period'\], which readers add beside the period column",
+        ),
     ],
 )
 def test_a_schema_that_cannot_hold_its_rules_is_refused_naming_its_file(column: dict[str, Any], message: str) -> None:

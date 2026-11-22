@@ -400,3 +400,4 @@ def test_a_table_follows_the_schema_it_declares_and_skips_what_its_roles_do_not_
     assert "one per key: `station`, `day`" in agents and "GeoParquet" not in agents
     page = client.get("/datasets/stations", params={"f": "html"}).text
     assert "Station rainfall" in page and "Latest value of each feature" not in page
+    assert "2 rows in all" in page and "no rows yet" not in page

@@ -698,7 +698,7 @@ represents each, except `value`:
 | `collection_id` | string | Filled with the feature collection a write reports on; goes with `feature_id` |
 | `feature_id` | string | Checked against the collection's features; `feature` filter; join example in the README; latest values on the page |
 | `feature_name` | string | Shown and sorted by on the page |
-| `period_start` | date | Stored as its period's first day; one period type per dataset; `start` and `end` filters; `period` and `period_end` in the rows API; temporal extent |
+| `period_start` | date | Must be `required` and not `nullable`; stored as its period's first day; one period type per dataset; `start` and `end` filters; `period` and `period_end` in the rows API, so no column may take those names; temporal extent |
 | `value` | number | A measured value: its unit in STAC; the first is shown on the page |
 | `unit` | string | One unit per dataset, given to the value columns in STAC |
 | `coverage` | double | From 0 to 1; a value with coverage 0 is refused |

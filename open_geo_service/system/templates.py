@@ -534,19 +534,23 @@ TABLE_PREVIEW_ROWS = 10
 def _table_view(dataset_id: str) -> dict[str, Any] | None:
     """Each feature's latest value, by feature name, for a table dataset's page.
 
-    None for a table without columns representing the feature, the period and a value: it has no latest value
-    per feature. A table with several value columns shows its first.
+    None for a table with no rows. The preview is None for a table without columns representing the
+    feature, the period and a value: it has no latest value per feature. A table with several value
+    columns shows its first.
     """
     from open_geo_service.tables import store
 
     record = store.latest_record(dataset_id)
     if record is None:
         return None
+    row_count = store.summarize(record).row_count
+    if row_count == 0:
+        return None
     declared = store.schema_of(record)
     feature, period = declared.represented_by("feature_id"), declared.represented_by("period_start")
     latest = store.latest_values(record, TABLE_PREVIEW_ROWS)
     if latest is None or feature is None or period is None or not declared.values or latest.row_count == 0:
-        return None
+        return {"row_count": row_count, "preview": None}
     value, name, coverage = (
         declared.values[0],
         declared.represented_by("feature_name"),
@@ -563,7 +567,7 @@ def _table_view(dataset_id: str) -> dict[str, Any] | None:
     # Every feature's, not only the rows shown: the heading names a period all features share.
     periods = latest.periods
     return {
-        "row_count": store.summarize(record).row_count,
+        "row_count": row_count,
         "preview": [
             {
                 "feature": (row[name] if name else None) or row[feature],

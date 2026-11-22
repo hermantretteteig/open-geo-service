@@ -229,6 +229,15 @@ def parse_schema(declared: object, *, source: str) -> TableSchema:
         if meaning in represented:
             raise ValueError(f"{where}: columns '{represented[meaning]}' and '{column.name}' both represent {meaning}")
         represented[meaning] = column.name
+    if period := represented.get("period_start"):
+        # Every row's period is snapped to its start, and the rows API adds its name and last day.
+        declared_period = next(column for column in columns if column.name == period)
+        if not declared_period.required or declared_period.nullable:
+            raise ValueError(
+                f"{where}: column '{period}' represents period_start, so it must be required and not nullable"
+            )
+        if clash := sorted(set(names) & {"period", "period_end"}):
+            raise ValueError(f"{where} declares {clash}, which readers add beside the period column")
     # A feature is checked against its collection, and a collection version is one of a collection's.
     if ("feature_id" in represented) != ("collection_id" in represented):
         raise ValueError(f"{where}: a column representing feature_id needs one representing collection_id, and back")
