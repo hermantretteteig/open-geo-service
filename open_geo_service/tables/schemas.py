@@ -271,6 +271,9 @@ def _column(declared: object, where: str) -> Column:
     unknown = sorted(set(declared) - {"name", "type", "description", "unit", "required", "nullable", "represents"})
     if unknown:
         raise ValueError(f"{where}: column '{name}' has unknown fields {unknown}")
+    unit = declared.get("unit")
+    if unit is not None and not isinstance(unit, str):
+        raise ValueError(f"{where}: column '{name}' has unit {unit!r}, which is not text; quote it")
     represents = declared.get("represents")
     if represents is None and (name in _REPRESENTED_ONCE or name == "value"):
         represents = name
@@ -278,7 +281,7 @@ def _column(declared: object, where: str) -> Column:
         name=name,
         type=kind,
         description=str(declared.get("description", "")),
-        unit=declared.get("unit"),
+        unit=unit,
         required=bool(declared.get("required", False)),
         nullable=bool(declared.get("nullable", True)),
         represents=str(represents) if represents is not None else None,

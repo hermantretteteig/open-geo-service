@@ -402,9 +402,12 @@ def latest_values(record: ArtifactRecord, limit: int) -> LatestValues | None:
     by_name = [*([(name, "ascending")] if name else []), (feature, "ascending")]
     dataset = pds.dataset(record.asset_paths, schema=declared.arrow, format="parquet")
     keys = [collection, feature]
-    newest_column = f"{period}_max"
+    # A name no declared column has, so the joins below have no two columns of one name.
+    newest_column = "_newest_period"
+    while newest_column in dataset.schema.names:
+        newest_column = f"_{newest_column}"
     narrow = dataset.to_table(columns=[*keys, *([name] if name else []), period])
-    newest = narrow.group_by(keys).aggregate([(period, "max")])
+    newest = narrow.group_by(keys).aggregate([(period, "max")]).rename_columns({f"{period}_max": newest_column})
     latest = narrow.join(newest, keys=keys).filter(pc.field(period) == pc.field(newest_column)).sort_by(by_name)
     shown_keys = [*keys, newest_column]
     shown = latest.slice(0, limit).select(shown_keys).group_by(shown_keys).aggregate([])

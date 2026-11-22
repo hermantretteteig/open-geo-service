@@ -346,6 +346,15 @@ STATION_SCHEMA = """
     - {name: day, type: date, required: true, nullable: false, represents: period_start, description: Day observed.}
     - {name: rainfall, type: double, unit: mm, represents: value, description: Rainfall over the day.}
   key: [station, day]
+- id: district_daily
+  name: Daily district values, beside the day's maximum
+  columns:
+    - {name: collection_id, type: string, nullable: false}
+    - {name: feature_id, type: string, required: true, nullable: false}
+    - {name: day, type: date, required: true, nullable: false, represents: period_start}
+    - {name: day_max, type: double}
+    - {name: value, type: double}
+  key: [collection_id, feature_id, day]
 """
 
 
@@ -402,3 +411,14 @@ def test_a_table_follows_the_schema_it_declares_and_skips_what_its_roles_do_not_
     page = client.get("/datasets/stations", params={"f": "html"}).text
     assert "Station rainfall" in page and "Latest value of each feature" not in page
     assert "2 rows in all" in page and "no rows yet" not in page
+
+    # A column named as the period's aggregate would be does not confuse the latest values.
+    store.write_rows(
+        dataset_id="district_days",
+        collection_id="districts",
+        rows=[{"feature_id": "D1", "day": "2026-01-01", "day_max": 9.0, "value": 4.0}],
+        schema="district_daily",
+        period_type="daily",
+    )
+    page = client.get("/datasets/district_days", params={"f": "html"}).text
+    assert "Latest value of each feature, 2026-01-01</h3>" in page and '<td class="numeric">4</td>' in page
