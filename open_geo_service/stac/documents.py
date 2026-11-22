@@ -242,11 +242,10 @@ def _table_readme(dataset_id: str, artifact: ArtifactRecord, template: dict[str,
         first = period_label(summary.first_period, artifact.period_type)
         last = period_label(summary.last_period, artifact.period_type)
         lines.append(f"- {summary.row_count} rows. {period} from {first} to {last}.")
-    if artifact.units:
-        lines.append(f"- Values in {artifact.units}.")
-    lines += ["", "| Column | Type | Description |", "| --- | --- | --- |"]
+    lines += ["", "| Column | Type | Unit | Description |", "| --- | --- | --- | --- |"]
     for column in services._table_dataset_columns(artifact):
-        lines.append(f"| `{column['name']}` | {column['type']} | {column.get('description', '')} |")
+        cells = (column["type"], column.get("unit", ""), column.get("description", ""))
+        lines.append(f"| `{column['name']}` | {' | '.join(cells)} |")
 
     join = _join_example(data, summary.collection_ids, declared, request)
     if join:

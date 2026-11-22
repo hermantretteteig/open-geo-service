@@ -67,6 +67,19 @@ def schema_of(record: ArtifactRecord | None) -> TableSchema:
     return get_schema(record.table_schema if record is not None and record.table_schema else DEFAULT_SCHEMA)
 
 
+def unit_of(record: ArtifactRecord, column: str) -> str | None:
+    """A column's unit, as the STAC metadata, README and page show it.
+
+    For a value column in a schema with a unit column, the one its rows were written in; else the
+    one the schema declares.
+    """
+    declared = schema_of(record)
+    if column in declared.values and declared.represented_by("unit"):
+        return record.units
+    described = declared.column(column)
+    return described.unit if described is not None else None
+
+
 def _dataset_lock(dataset_id: str) -> AbstractContextManager[None]:
     """Serialize writes to one dataset across processes, so no write's record drops another's file.
 

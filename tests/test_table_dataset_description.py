@@ -396,6 +396,7 @@ def test_a_table_follows_the_schema_it_declares_and_skips_what_its_roles_do_not_
 
     readme = client.get("/stac/stations/README.md").text
     assert "Daily periods from 2026-01-01 to 2026-01-02." in readme and "Joining" not in readme
+    assert "| `rainfall` | double | mm | Rainfall over the day. |" in readme
     agents = client.get("/stac/stations/AGENTS.md").text
     assert "one per key: `station`, `day`" in agents and "GeoParquet" not in agents
     page = client.get("/datasets/stations", params={"f": "html"}).text

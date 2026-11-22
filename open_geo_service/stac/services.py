@@ -622,13 +622,9 @@ def _build_table_collection(dataset_id: str, artifact: ArtifactRecord, request: 
 
 
 def _table_dataset_columns(artifact: ArtifactRecord) -> list[dict[str, str]]:
-    """`table:columns` for a table dataset: each column its schema declares, with its type, description and unit.
-
-    A value column's unit is the one its rows were written in, when the schema has a unit
-    column, else the one the schema declares for it.
-    """
+    """`table:columns` for a table dataset: each column its schema declares, with its type, description and unit."""
     from open_geo_service.tables.schemas import WRITTEN_AT_DESCRIPTION
-    from open_geo_service.tables.store import schema_of
+    from open_geo_service.tables.store import schema_of, unit_of
 
     declared = schema_of(artifact)
     columns: list[dict[str, str]] = []
@@ -637,9 +633,7 @@ def _table_dataset_columns(artifact: ArtifactRecord) -> list[dict[str, str]]:
         described = declared.column(field.name)
         # Only `written_at` is not declared: the store adds it to every table.
         description = described.description if described is not None else WRITTEN_AT_DESCRIPTION
-        unit = described.unit if described is not None else None
-        if field.name in declared.values and declared.represented_by("unit"):
-            unit = artifact.units
+        unit = unit_of(artifact, field.name)
         if description:
             column["description"] = description
         # The table extension defines no unit field, and its column schema admits further ones.

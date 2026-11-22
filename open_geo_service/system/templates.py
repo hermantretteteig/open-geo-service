@@ -587,7 +587,7 @@ def _table_view(dataset_id: str) -> dict[str, Any] | None:
         "has_series": len(series) > 1,
         "common_series": next(iter(series)) if len(series) == 1 else "",
         "has_coverage": bool(coverage) and any(row[coverage] is not None for row in preview),
-        "unit": record.units or "",
+        "unit": store.unit_of(record, value) or "",
     }
 
 
