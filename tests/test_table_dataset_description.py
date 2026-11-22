@@ -347,14 +347,13 @@ STATION_SCHEMA = """
     - {name: rainfall, type: double, unit: mm, represents: value, description: Rainfall over the day.}
   key: [station, day]
 - id: district_daily
-  name: Daily district values, beside the day's maximum
+  name: Daily district values, by a feature column named like the period's maximum
   columns:
     - {name: collection_id, type: string, nullable: false}
-    - {name: feature_id, type: string, required: true, nullable: false}
+    - {name: day_max, type: string, required: true, nullable: false, represents: feature_id}
     - {name: day, type: date, required: true, nullable: false, represents: period_start}
-    - {name: day_max, type: double}
     - {name: value, type: double}
-  key: [collection_id, feature_id, day]
+  key: [collection_id, day_max, day]
 """
 
 
@@ -416,7 +415,7 @@ def test_a_table_follows_the_schema_it_declares_and_skips_what_its_roles_do_not_
     store.write_rows(
         dataset_id="district_days",
         collection_id="districts",
-        rows=[{"feature_id": "D1", "day": "2026-01-01", "day_max": 9.0, "value": 4.0}],
+        rows=[{"day_max": "D1", "day": "2026-01-01", "value": 4.0}],
         schema="district_daily",
         period_type="daily",
     )
