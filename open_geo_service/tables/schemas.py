@@ -45,9 +45,12 @@ TYPES: dict[str, pa.DataType] = {
     "bool": pa.bool_(),
     "date": pa.date32(),
     "timestamp": pa.timestamp("us", tz="UTC"),
-    "duration": pa.duration("s"),
 }
-"""The column types a schema can declare, and how each is stored."""
+"""The column types a schema can declare, and how each is stored.
+
+Each has an Apache Iceberg type, so a table can later become an Iceberg table over the same files
+(CLIM-1983).
+"""
 
 _REPRESENTED_ONCE = {
     "dataset_id": ("string",),

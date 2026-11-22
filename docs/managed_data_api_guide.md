@@ -681,9 +681,11 @@ its metadata as `ogs:table_schema`.
   key: [station, day]
 ```
 
-A column has a `type` (`string`, `double`, `int32`, `int64`, `bool`, `date`, `timestamp`,
-`duration`), a `description`, and optionally a `unit`. A row must name each `required` column,
-and a column with `nullable: false` must hold a value. The store adds `written_at` to every table.
+A column has a `type` (`string`, `double`, `int32`, `int64`, `bool`, `date`, `timestamp`), a
+`description`, and optionally a `unit`. There is no duration type, as Apache Iceberg has none:
+store a time span as `int64` with a `unit`, as the aggregation schema's `lead_time` does in `s`.
+A row must name each `required` column, and a column with `nullable: false` must hold a value.
+The store adds `written_at` to every table.
 
 A column's `represents` tells the store and its readers what it holds, which adds what they do
 with it. The names are the aggregation schema's columns, and a column with one of those names

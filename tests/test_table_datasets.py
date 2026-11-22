@@ -762,6 +762,7 @@ def test_a_period_ends_on_its_last_day(period_type: str | None, start: date, end
             "representing feature_id needs one representing collection_id",
         ),
         ({"name": "written_at", "type": "timestamp"}, "declares 'written_at'"),
+        ({"name": "lead", "type": "duration"}, "column 'lead' has type 'duration'"),
     ],
 )
 def test_a_schema_that_cannot_hold_its_rules_is_refused_naming_its_file(column: dict[str, Any], message: str) -> None:

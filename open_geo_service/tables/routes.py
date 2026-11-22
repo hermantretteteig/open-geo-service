@@ -2,7 +2,7 @@
 
 import csv
 import io
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -117,6 +117,4 @@ def _cell(value: object) -> object:
         return ""
     if isinstance(value, (date, datetime)):
         return value.isoformat()
-    if isinstance(value, timedelta):
-        return int(value.total_seconds())
     return value

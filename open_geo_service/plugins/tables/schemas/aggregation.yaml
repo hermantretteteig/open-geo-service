@@ -49,7 +49,8 @@
       type: timestamp
       description: When the forecast the value comes from was issued.
     - name: lead_time
-      type: duration
+      type: int64
+      unit: s
       description: Time from the forecast's reference time to the period, in seconds.
     - name: member
       type: int32

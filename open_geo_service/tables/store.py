@@ -633,8 +633,6 @@ def _typed(value: object, name: str, kind: str, *, index: int) -> Any:
         return _date(value, name, index=index)
     if kind == "timestamp":
         return _utc(value, f"row {index}: {name}")
-    if kind == "duration" and isinstance(value, timedelta):
-        return value
     article = "an" if kind[0] in "aeiou" else "a"
     raise ValueError(f"row {index}: {name} must be {article} {kind}, got {value!r}")
 
