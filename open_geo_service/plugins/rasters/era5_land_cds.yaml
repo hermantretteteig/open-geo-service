@@ -10,6 +10,10 @@
   sync:
     kind: temporal
     execution: append
+    # Recent days are ERA5-Land-T, replaced with final data about two months after their month,
+    # so a day early in a month is final about three months after it ends. P4M leaves margin;
+    # every daily template below declares the same.
+    refresh_after: P4M
   extents:
     spatial:
       bbox: [-180, -90, 180, 90]
@@ -49,6 +53,7 @@
   sync:
     kind: temporal
     execution: append
+    refresh_after: P4M
   extents:
     spatial:
       bbox: [-180, -90, 180, 90]
@@ -88,6 +93,7 @@
   sync:
     kind: temporal
     execution: append
+    refresh_after: P4M
   extents:
     spatial:
       bbox: [-180, -90, 180, 90]
@@ -127,6 +133,7 @@
   sync:
     kind: temporal
     execution: append
+    refresh_after: P4M
   extents:
     spatial:
       bbox: [-180, -90, 180, 90]
@@ -168,6 +175,7 @@
   sync:
     kind: temporal
     execution: append
+    refresh_after: P4M
   extents:
     spatial:
       bbox: [-180, -90, 180, 90]
@@ -212,6 +220,7 @@
   sync:
     kind: temporal
     execution: append
+    refresh_after: P4M
   extents:
     spatial:
       bbox: [-180, -90, 180, 90]
@@ -250,6 +259,7 @@
   sync:
     kind: temporal
     execution: append
+    refresh_after: P4M
   extents:
     spatial:
       bbox: [-180, -90, 180, 90]
@@ -288,6 +298,7 @@
   sync:
     kind: temporal
     execution: append
+    refresh_after: P4M
   extents:
     spatial:
       bbox: [-180, -90, 180, 90]

@@ -10,6 +10,10 @@
   sync:
     kind: temporal
     execution: append
+    # Earth Data Hub serves recent days as ERA5-Land-T, final about two months after their
+    # month, so a month built from them changes too. P4M, as on the daily CDS templates,
+    # leaves margin; the precipitation template below declares the same.
+    refresh_after: P4M
   extents:
     spatial:
       bbox: [-180, -90, 180, 90]
@@ -49,6 +53,7 @@
   sync:
     kind: temporal
     execution: append
+    refresh_after: P4M
   extents:
     spatial:
       bbox: [-180, -90, 180, 90]
