@@ -13,6 +13,7 @@ This module is the one place that rule is decided.
 from __future__ import annotations
 
 import calendar
+import logging
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -33,6 +34,11 @@ FETCHED_AT_ENCODING: dict[str, Any] = {
     "dtype": "float64",
 }
 """Pinned so that every append and region write encodes ``fetched_at`` the same way."""
+
+CLOCK_TOLERANCE = timedelta(hours=1)
+"""How far a ``fetched_at`` may lie after now before it is taken as written by a clock running ahead."""
+
+logger = logging.getLogger(__name__)
 
 _DURATION = re.compile(
     r"^P(?!$)(?:(?P<years>\d+)Y)?(?:(?P<months>\d+)M)?(?:(?P<weeks>\d+)W)?(?:(?P<days>\d+)D)?"
@@ -141,13 +147,29 @@ def refresh_due(
     while no sync ran is still due at the next one. Periods inside the window are not due: their
     preliminary values do not change in place, so refetching them would cost one window of
     fetches per sync for nothing.
+
+    A ``fetched_at`` more than :data:`CLOCK_TOLERANCE` after ``now`` cannot be true: the server
+    clock ran ahead when it was written, and the period may have been stamped past its
+    ``final_after`` while still preliminary. Such a period is due, with a warning, so it is
+    fetched again once the clock is correct. A clock running behind only delays a refresh.
     """
     now = _as_utc(now)
-    return [
-        found.period
-        for found in provisional_periods(period_ids, fetched_at, period_type, window)
-        if found.final_after <= now
-    ]
+    due: list[str] = []
+    for period_id, fetched in zip(period_ids, fetched_at, strict=True):
+        if fetched is None:
+            continue
+        stamped = _as_utc(fetched)
+        if stamped > now + CLOCK_TOLERANCE:
+            logger.warning(
+                "Period %s was fetched at %s, later than now (%s); the server clock was ahead, so it is fetched again",
+                period_id,
+                stamped.isoformat(),
+                now.isoformat(),
+            )
+            due.append(period_id)
+        elif stamped < final_after(period_id, period_type, window) <= now:
+            due.append(period_id)
+    return due
 
 
 def _as_utc(value: datetime) -> datetime:
