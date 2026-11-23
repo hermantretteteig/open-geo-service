@@ -901,7 +901,12 @@ def test_hdx_hapi_rows_are_read_page_by_page_for_the_extents_country(
             "rainfall": rainfall,
         }
 
-    pages = [[row("D1", "2026-01-01", 120.5), row("D2", "2026-01-01", 98.0)], [row("D1", "2026-01-11", 80.0)]]
+    unmatched = row("SL02-XXX", "2026-01-11", 1.0)
+    pages = [
+        [row("D1", "2026-01-01", 120.5), row("D2", "2026-01-01", 98.0)],
+        [row("D1", "2026-01-11", 80.0), unmatched],
+        [],
+    ]
     queries: list[dict[str, str]] = []
 
     def answer(request: httpx.Request) -> httpx.Response:
@@ -918,6 +923,7 @@ def test_hdx_hapi_rows_are_read_page_by_page_for_the_extents_country(
     assert [(q["offset"], q["location_code"], q["admin_level"], q["start_date"], q["version"]) for q in queries] == [
         ("0", "SLE", "2", "2026-01-01", "final"),
         ("2", "SLE", "2", "2026-01-01", "final"),
+        ("4", "SLE", "2", "2026-01-01", "final"),
     ]
     rows = client.get("/tables/district_rainfall_hapi/rows").json()["items"]
     assert [(r["feature_id"], r["period"], r["value"], r["unit"]) for r in rows] == [
@@ -925,6 +931,42 @@ def test_hdx_hapi_rows_are_read_page_by_page_for_the_extents_country(
         ("D1", "2026-01-11", 80.0, "mm"),
         ("D2", "2026-01-01", 98.0, "mm"),
     ]
+
+
+def test_hdx_cod_ab_boundaries_are_one_level_of_the_countrys_edge_matched_download(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+    import json
+    import zipfile
+
+    import httpx
+
+    def area(code: str, west: float) -> dict[str, Any]:
+        feature = _box(code, west, 8)
+        feature["properties"] = {"adm2_pcode": code, "adm2_name": code, "adm1_pcode": "SL01", "version": "v02"}
+        return feature
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zipped:
+        layer = {"type": "FeatureCollection", "features": [area("SL0101", -11), area("SL0102", -12)]}
+        zipped.writestr("sle_admin2_em.geojson", json.dumps(layer))
+    requested: list[str] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if "package_show" in str(request.url):
+            resources = [{"name": "sle_admin_boundaries.geojson.zip", "url": "https://hdx.example/cod.zip"}]
+            return httpx.Response(200, json={"result": {"resources": resources}})
+        return httpx.Response(200, content=archive.getvalue())
+
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(answer), **kw))
+    assert client.post("/features/hdx_cod_ab_admin2/refresh", json={}).status_code == 200
+
+    assert "id=cod-ab-sle" in requested[0]
+    collection = client.get("/features/hdx_cod_ab_admin2").json()
+    assert (collection["feature_count"], collection["version"]["value"]) == (2, "v02")
 
 
 def test_a_table_template_in_an_installed_plugin_package_is_discovered(

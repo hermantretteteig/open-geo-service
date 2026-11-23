@@ -1,0 +1,35 @@
+# Common operational administrative boundaries (COD-AB) from the Humanitarian Data Exchange, for
+# this instance's country (`extent.country_code`). Their p-codes are the ids humanitarian tables
+# report on, such as the HDX HAPI table templates in plugins/tables/hdx_hapi.yaml. A refresh
+# downloads the country's COD-AB once; the edition in the files is the collection's version.
+- id: hdx_cod_ab_admin1
+  name: Admin 1 boundaries (HDX COD-AB)
+  description: >-
+    First-level administrative boundaries of this instance's country, from the common operational
+    datasets OCHA publishes on the Humanitarian Data Exchange, identified by p-code.
+  license: CC-BY-3.0-IGO
+  providers:
+    - name: OCHA Field Information Services
+      url: https://data.humdata.org/organization/ocha-fiss
+      roles: [processor]
+  source_url: https://data.humdata.org/dataset/?cod_level=cod-ab
+  id_property: adm1_pcode
+  provider: hdx_cod_ab
+  params:
+    level: 1
+
+- id: hdx_cod_ab_admin2
+  name: Admin 2 boundaries (HDX COD-AB)
+  description: >-
+    Second-level administrative boundaries of this instance's country, from the common operational
+    datasets OCHA publishes on the Humanitarian Data Exchange, identified by p-code.
+  license: CC-BY-3.0-IGO
+  providers:
+    - name: OCHA Field Information Services
+      url: https://data.humdata.org/organization/ocha-fiss
+      roles: [processor]
+  source_url: https://data.humdata.org/dataset/?cod_level=cod-ab
+  id_property: adm2_pcode
+  provider: hdx_cod_ab
+  params:
+    level: 2

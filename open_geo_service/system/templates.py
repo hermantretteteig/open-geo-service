@@ -1168,9 +1168,20 @@ def render_data_sources_page(mount: str) -> str:
         styles=_read_asset("geoservice_ui.css"),
         list_script=_read_asset("geoservice_list.js"),
         nav=page_nav(mount, "data-sources"),
-        sources=[_source_view(t) for t in _ingestable_templates(templates)]
-        + [_feature_source_view(t) for t in _load_feature_templates()]
-        + [{**_source_view(t), "kind": "table"} for t in _load_table_templates()],
+        sources=_fetchable_sources(templates, _load_feature_templates(), _load_table_templates()),
+    )
+
+
+def _fetchable_sources(
+    templates: list[dict[str, Any]],
+    feature_templates: list[dict[str, Any]] | None,
+    table_templates: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """The data sources this instance can fetch, as cards: rasters, then vectors, then tables."""
+    return (
+        [_source_view(t) for t in _ingestable_templates(templates)]
+        + [_feature_source_view(t) for t in feature_templates or []]
+        + [{**_source_view(t), "kind": "table"} for t in table_templates or []]
     )
 
 
@@ -1937,6 +1948,7 @@ def _landing_catalogue(
     templates: list[dict[str, Any]],
     workflows: list[Any],
     feature_templates: list[dict[str, Any]] | None = None,
+    table_templates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Split templates between the Data sources and Workflows areas by what can be ingested.
 
@@ -1946,8 +1958,7 @@ def _landing_catalogue(
     Workflows as an output of an unknown workflow, rather than silently dropped.
     """
     sources = sorted(
-        [_source_view(t) for t in _ingestable_templates(templates)]
-        + [_feature_source_view(t) for t in feature_templates or []],
+        _fetchable_sources(templates, feature_templates, table_templates),
         key=lambda source: (source["provider"].lower(), source["name"].lower()),
     )
     workflow_ids = {workflow.id for workflow in workflows}
@@ -2088,7 +2099,9 @@ def render_landing(version: str, mount: str, viewer: Principal | None = None) ->
     """
     extent = _load_extent()
     templates = _load_templates()
-    catalogue = _landing_catalogue(templates, _load_workflows(viewer), _load_feature_templates())
+    catalogue = _landing_catalogue(
+        templates, _load_workflows(viewer), _load_feature_templates(), _load_table_templates()
+    )
     return get_template("landing_page.html").render(
         version=version,
         mount=mount,

@@ -254,6 +254,52 @@ name `type` outright. Only `divisions` is shipped as a template.
 them is a breach, and share-alike attaches to a publicly served derived database.
 
 
+## HDX COD-AB — administrative boundaries (feature collection)
+
+| Property             | Value                                                                              |
+| -------------------- | ---------------------------------------------------------------------------------- |
+| **Collection IDs**   | `hdx_cod_ab_admin1`, `hdx_cod_ab_admin2`                                           |
+| **Item type**        | Feature collection (GeoParquet), not a raster                                      |
+| **Identity**         | `id_property: adm1_pcode` or `adm2_pcode`, the p-code                              |
+| **Spatial coverage** | This instance's country (`extent.country_code`)                                    |
+| **Version**          | The COD-AB edition in the files, e.g. `v02`                                        |
+| **Licence**          | CC-BY-3.0-IGO — attribution                                                        |
+| **Source**           | [COD-AB on the Humanitarian Data Exchange](https://data.humdata.org/dataset/?cod_level=cod-ab) |
+
+The common operational administrative boundaries OCHA publishes for humanitarian work, identified
+by the p-codes humanitarian tables report on, the HDX HAPI tables below among them. A refresh finds
+the country's `cod-ab-<iso3>` dataset, downloads its GeoJSON zip once (a few MB to over 100 MB)
+and keeps the edge-matched layer of one admin level, aligned to the international borders. HDX has
+republished about 114 countries' boundaries in this layout; a country it has not yet, such as
+Rwanda, is refused with a message saying so.
+
+## HDX HAPI — food insecurity and market food prices (tables)
+
+| Property           | Value                                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------------- |
+| **Table IDs**      | `hdx_hapi_food_security`, `hdx_hapi_food_prices`                                            |
+| **Item type**      | Table (Parquet), per admin 2 area of `hdx_cod_ab_admin2` and month                         |
+| **Coverage**       | This instance's country, where [HDX HAPI](https://hapi.humdata.org/docs) has it             |
+| **Licence**        | Food insecurity: public domain (IPC). Food prices: CC-BY-3.0-IGO (WFP)                      |
+| **Source**         | [IPC country data](https://data.humdata.org/dataset/global-acute-food-insecurity-country-data), [WFP food prices](https://data.humdata.org/dataset/global-wfp-food-prices) |
+
+**Setup** — encode an application name and a contact email with `encode_app_identifier` at
+https://hapi.humdata.org/docs and set the result as `HDX_HAPI_APP_IDENTIFIER` in `.env`. Fetch
+`hdx_cod_ab_admin2` first: the tables report on it.
+
+- `hdx_hapi_food_security`: people in each phase of acute food insecurity, from the current IPC
+  or Cadre Harmonisé analyses, with the phase (1 to 5, `3+`, `all`) in `class`. A row is dated by
+  the first month of its analysis period.
+- `hdx_hapi_food_prices`: monthly prices of commodities per market, in the `market_prices` schema,
+  with the market, commodity, price type and `measure` (KG, L) in its key and the currency as the
+  table's unit. Prices are in the currency WFP reports, e.g. Sierra Leone's in old leones (`SLL`).
+
+HAPI's p-codes follow each source's edition. A row HAPI could not match to a current p-code has a
+code ending in `-XXX` and is skipped, so its area is missing rather than wrong. For Sierra Leone
+that leaves out Kambia and Port Loko, redrawn since the 2020 census, and Kailahun and Karene in
+the food insecurity rows HAPI has matched that way since October 2021.
+
+
 ## DHIS2 — organisation units (feature collection)
 
 The built-in `dhis2` provider fetches organisation units with their boundaries from a DHIS2

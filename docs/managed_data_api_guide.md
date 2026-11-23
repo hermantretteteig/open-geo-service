@@ -767,8 +767,11 @@ date or a period id (`2026-01`, `2026-W01`, `2026`).
   one paged query per ingestion or sync. Rows are the `admin_level` (1 or 2, default 2) areas of
   the extent's country, or `location_code`, named by p-code (`admin2_code`) and period start
   (`reference_period_start`); map the value field with `columns`, and keep one row per area and
-  period with `filters`. Set `HDX_HAPI_APP_IDENTIFIER` in `.env`, an application name and contact
-  email encoded by HAPI's `encode_app_identifier`.
+  period with `filters`. Rows HAPI could not match to a current p-code, with a code ending in
+  `-XXX`, are skipped and named in the log. Set `HDX_HAPI_APP_IDENTIFIER` in `.env`, an
+  application name and contact email encoded by HAPI's `encode_app_identifier`. Food insecurity
+  and market food prices ship as templates; see
+  [Built-in datasets](built_in_datasets.md#hdx-hapi--food-insecurity-and-market-food-prices-tables).
 
 ```yaml
 - id: rainfall_hapi

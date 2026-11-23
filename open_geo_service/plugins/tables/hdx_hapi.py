@@ -4,17 +4,24 @@ HAPI serves values per admin area and reference period, such as rainfall, baseli
 and conflict events, at https://hapi.humdata.org/docs. One ingestion or sync makes one query
 for the requested periods, paged by 10,000 rows, and keeps the rows on the plugin.
 
+A row whose area HAPI could not match to a current p-code carries a code ending in `-XXX`, such
+as Sierra Leone's 2020 census counts for Kambia and Port Loko, districts since redrawn. Those rows
+are skipped and counted in the log: the area is missing from the table rather than wrong in it.
+
 HAPI asks every client for an app identifier, which encodes an application name and a contact
 email (`/api/v2/encode_app_identifier`). Set it as `HDX_HAPI_APP_IDENTIFIER` in `.env`.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator, Mapping
 from datetime import date
 from typing import Any
 
 from open_geo_service.tables.plugin import FieldsTablePlugin
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://hapi.humdata.org/api/v2"
 PAGE_SIZE = 10_000
@@ -85,6 +92,8 @@ class HapiTablePlugin(FieldsTablePlugin):
             query["start_date"] = start.isoformat()
         if end is not None:
             query["end_date"] = end.isoformat()
+        code = f"admin{self.admin_level}_code"
+        unmatched: set[str] = set()
         with httpx.Client(timeout=60) as client:
             offset = 0
             while True:
@@ -92,7 +101,16 @@ class HapiTablePlugin(FieldsTablePlugin):
                 response.raise_for_status()
                 page = response.json()["data"]
                 for index, record in enumerate(page, start=offset):
+                    if str(record.get(code) or "").endswith("-XXX"):
+                        unmatched.add(str(record.get(f"admin{self.admin_level}_name")))
+                        continue
                     yield f"HAPI {self.endpoint} row {index}", record
                 if len(page) < PAGE_SIZE:
-                    return
+                    break
                 offset += PAGE_SIZE
+        if unmatched:
+            logger.warning(
+                "HAPI %s: skipped the rows of %s, which HAPI could not match to a p-code",
+                self.endpoint,
+                ", ".join(sorted(unmatched)),
+            )

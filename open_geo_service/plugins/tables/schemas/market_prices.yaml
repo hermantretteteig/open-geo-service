@@ -1,0 +1,76 @@
+# Prices of commodities in markets, per month, reported on the admin area each market lies in.
+# The HDX HAPI food price template (plugins/tables/hdx_hapi.yaml) writes it. The quantity a price
+# is for is `measure`, not `unit`: a column named `unit` holds the table's one unit, which here is
+# its currency. See "Table schemas" in docs/managed_data_api_guide.md.
+- id: market_prices
+  name: Market prices per area and month
+  description: Prices of commodities in markets, per month, with the admin area each market lies in.
+  columns:
+    - name: collection_id
+      type: string
+      nullable: false
+      description: Id of the feature collection the market's area is in; joins to its GeoParquet.
+    - name: feature_id
+      type: string
+      required: true
+      nullable: false
+      description: Id of the admin area the market lies in; joins to the feature collection.
+    - name: feature_name
+      type: string
+      description: Name of the admin area when the price was written.
+    - name: dataset_id
+      type: string
+      nullable: false
+      description: Id of this table dataset.
+    - name: period_start
+      type: date
+      required: true
+      nullable: false
+      description: First day of the month the price is for.
+    - name: market
+      type: string
+      required: true
+      nullable: false
+      description: Name of the market.
+    - name: latitude
+      type: double
+      description: Latitude of the market.
+    - name: longitude
+      type: double
+      description: Longitude of the market.
+    - name: commodity
+      type: string
+      required: true
+      nullable: false
+      description: The commodity priced.
+    - name: commodity_category
+      type: string
+      description: The commodity's category, e.g. cereals and tubers.
+    - name: price_type
+      type: string
+      required: true
+      nullable: false
+      description: Where in the chain the price is paid, e.g. Retail or Wholesale.
+    - name: measure
+      type: string
+      required: true
+      nullable: false
+      description: Quantity the price is for, e.g. KG or L.
+    - name: price
+      type: double
+      required: true
+      represents: value
+      description: The price, in the table's currency.
+    - name: currency
+      type: string
+      represents: unit
+      description: ISO 4217 code of the currency the price is in.
+  key:
+    - collection_id
+    - feature_id
+    - dataset_id
+    - period_start
+    - market
+    - commodity
+    - price_type
+    - measure
