@@ -111,7 +111,7 @@ def test_a_streaming_ingest_records_the_size_and_statistics_of_the_published_sto
 
     def fake_sync(**_kwargs: object) -> object:
         downloader.write_to_icechunk_store(cube, store_path, commit_message="test")
-        return SimpleNamespace(periods_written=3)
+        return SimpleNamespace(periods_written=3, refreshed_indices=[])
 
     class _Plugin:
         time_dim = "t"
@@ -207,7 +207,7 @@ def test_a_failed_append_that_keeps_its_commits_refreshes_the_recorded_size(
 
     def first_sync(**_kwargs: object) -> object:
         downloader.write_to_icechunk_store(cube("2026-01-01", 3), store_path, commit_message="test")
-        return SimpleNamespace(periods_written=3)
+        return SimpleNamespace(periods_written=3, refreshed_indices=[])
 
     def failing_sync(**_kwargs: object) -> object:
         # Commit two more days, as the orchestrator does period by period, then fail.

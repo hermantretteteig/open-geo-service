@@ -495,6 +495,19 @@ class ArtifactStatistics(BaseModel):
     p98: float | None = None
 
 
+class ProvisionalPeriod(BaseModel):
+    """A stored period fetched from a source's preliminary product, before its final version (CLIM-931)."""
+
+    period: str = Field(description="The period, in dataset-native string form.")
+    fetched_at: datetime = Field(description="When the stored values were fetched.")
+    final_after: datetime = Field(
+        description=(
+            "When the source's final version is expected: the period's end plus the template's "
+            "sync.refresh_after. The first sync after this replaces the values."
+        )
+    )
+
+
 class ArtifactRecord(BaseModel):
     """Stored artifact metadata."""
 
@@ -551,6 +564,15 @@ class ArtifactRecord(BaseModel):
     )
     request_scope: ArtifactRequestScope
     coverage: ArtifactCoverage
+    provisional_periods: list[ProvisionalPeriod] = Field(
+        default_factory=lambda: list[ProvisionalPeriod](),
+        description=(
+            "Stored periods whose values come from the source's preliminary product, derived at "
+            "the end of each ingest or sync from the store and the template's current "
+            "sync.refresh_after. They are published like any other period. Empty for a source "
+            "without a preliminary product."
+        ),
+    )
     created_at: datetime
     publication: ArtifactPublication = Field(default_factory=ArtifactPublication)
     provenance: ArtifactProvenance | None = Field(
@@ -744,6 +766,13 @@ class DatasetRecord(BaseModel):
         ),
     )
     extent: ArtifactCoverage = Field(description="Current covered spatial and temporal extent of the dataset.")
+    provisional_periods: list[ProvisionalPeriod] = Field(
+        default_factory=lambda: list[ProvisionalPeriod](),
+        description=(
+            "Periods whose values come from the source's preliminary product and will be "
+            "replaced by a sync once the final version is expected."
+        ),
+    )
     last_updated: datetime = Field(
         description="Timestamp when Open Geo Service last materialized or updated the dataset."
     )
@@ -940,6 +969,19 @@ class SyncDetail(BaseModel):
     delta_end: str | None = Field(
         default=None,
         description="Last missing period planned for append execution, when applicable.",
+    )
+    refresh_start: str | None = Field(
+        default=None,
+        description=(
+            "First stored period to fetch again and replace, because it was fetched from the "
+            "source's preliminary product and its final version is now expected."
+        ),
+    )
+    refresh_end: str | None = Field(default=None, description="Last stored period to fetch again and replace.")
+    refresh_periods: list[str] | None = Field(
+        default=None,
+        description="The stored periods to replace, refresh_start through refresh_end, as the source serves them.",
+        exclude=True,
     )
     periods: list[str] | None = Field(
         default=None,

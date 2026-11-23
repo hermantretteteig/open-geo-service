@@ -609,7 +609,7 @@ def test_one_ingest_produces_exactly_one_render(tmp_path: Path, monkeypatch: pyt
     def fake_sync(**kwargs: object) -> object:
         # Stand in for a three-period sync: the store the finalisation sees is the finished one.
         downloader.write_to_icechunk_store(_daily_cube(3), store_path, commit_message="test")
-        return SimpleNamespace(periods_written=3)
+        return SimpleNamespace(periods_written=3, refreshed_indices=[])
 
     renders: list[Any] = []
     real_render = thumbnails.render_png

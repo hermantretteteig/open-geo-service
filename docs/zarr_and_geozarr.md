@@ -75,6 +75,20 @@ Dimensions are normalised before writing, regardless of the source naming conven
 
 ---
 
+## Preliminary periods
+
+Some sources publish recent periods as a preliminary product and replace them with final values later. ERA5-Land publishes ERA5-Land-T, final about two months after the month in question. Neither source we read marks which periods are preliminary, so the store records when each period was fetched instead.
+
+**`fetched_at`.** Every period an ingestion or sync writes carries a `fetched_at` coordinate along `t`: the UTC instant it was fetched. It is stored as float64 seconds since 1970, so a period with no known fetch time is NaN (NaT when decoded). A pyramid holds it on every level, not at the root. It is bookkeeping, so the accessor drops it unless a caller asks for it: it does not reach aggregation, openEO, exports, STAC or the map. Stores written before it existed get it at their next sync, NaT for the periods they already hold.
+
+**The rule.** A template's `sync.refresh_after` (an ISO 8601 duration) says when a period's final version is expected: `final_after = end of period + refresh_after`. A sync fetches a period again when `fetched_at < final_after <= now`. Fetched again after that, its new `fetched_at` is past `final_after`, so each period is fetched at most twice, and a period that matured while no sync ran is replaced at the next one. Periods still inside the window are not fetched again: their preliminary values do not change in place. NaT counts as final, so a store that held ERA5-Land-T before this existed is not corrected until it is ingested again. The window is read from the template at each sync, so changing it applies to existing stores. `open_geo_service/shared/provisional.py` is where the rule is decided.
+
+**The sync.** The planner reads `fetched_at` from the store and fetches the due periods first, from the earliest to the latest due one, then appends new periods as before, in one sync. A due period is written in place on level 0 (a Zarr region write), and a pyramid's coarser levels for it are recomputed by the kernel that extends them on append. The sync plan names the periods as `refresh_start` and `refresh_end`, and the update event a pipeline runs on starts from the first of them.
+
+**The API.** A managed dataset lists its preliminary periods in `provisional_periods`, with `fetched_at` and `final_after`. They are published like any other period.
+
+---
+
 ## Multiscale pyramids
 
 For large spatial extents, a flat zarr would require a map viewer to download the entire spatial extent at full resolution on every tile request. The platform builds a multiscale pyramid when the grid has more than **1024 × 1024 pixels** (`nx * ny > 1,048,576`). A pyramid adds about a third to the store's size.

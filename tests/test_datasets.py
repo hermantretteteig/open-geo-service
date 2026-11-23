@@ -1327,7 +1327,7 @@ def test_create_artifact_uses_streaming_plugin_for_direct_ingest(
 
     def fake_run_streaming_ingest_sync(**kwargs: object) -> object:
         captured["run"] = kwargs
-        return type("Result", (), {"periods_written": 1})()
+        return type("Result", (), {"periods_written": 1, "refreshed_indices": []})()
 
     monkeypatch.setattr(services, "run_streaming_ingest_sync", fake_run_streaming_ingest_sync)
 
@@ -1379,6 +1379,7 @@ def test_create_artifact_uses_streaming_plugin_for_direct_ingest(
         "save_cursor": None,
         "periods": ["2026-01-01", "2026-01-02", "2026-01-03"],
         "committed_periods": [],
+        "refresh_periods": [],
     }
     assert artifact.format == ArtifactFormat.ICECHUNK
     assert artifact.path == str(store_path.resolve())
@@ -1410,7 +1411,7 @@ def test_create_artifact_uses_streaming_plugin_for_store_based_sync(
 
     def fake_run_streaming_ingest_sync(**kwargs: object) -> object:
         captured["run"] = kwargs
-        return type("Result", (), {"periods_written": 2})()
+        return type("Result", (), {"periods_written": 2, "refreshed_indices": []})()
 
     monkeypatch.setattr(services, "run_streaming_ingest_sync", fake_run_streaming_ingest_sync)
     monkeypatch.setattr(
@@ -1485,7 +1486,7 @@ def test_create_artifact_appends_a_contiguous_union_and_preserves_request_proven
 
     def fake_ingest(**kwargs: object) -> object:
         captured.update(kwargs)
-        return type("Result", (), {"periods_written": 2})()
+        return type("Result", (), {"periods_written": 2, "refreshed_indices": []})()
 
     monkeypatch.setattr(services, "run_streaming_ingest_sync", fake_ingest)
     monkeypatch.setattr(
@@ -1557,7 +1558,7 @@ def test_create_artifact_rolls_back_append_when_pyramid_rebuild_fails(
     monkeypatch.setattr(
         services,
         "run_streaming_ingest_sync",
-        lambda **_: type("Result", (), {"periods_written": 1})(),
+        lambda **_: type("Result", (), {"periods_written": 1, "refreshed_indices": []})(),
     )
     monkeypatch.setattr(
         services,
@@ -1667,7 +1668,9 @@ def test_create_artifact_forwards_country_code_to_streaming_plugin(
     monkeypatch.setattr(
         services,
         "run_streaming_ingest_sync",
-        lambda **kwargs: captured.update({"run": kwargs}) or type("Result", (), {"periods_written": 1})(),
+        lambda **kwargs: (
+            captured.update({"run": kwargs}) or type("Result", (), {"periods_written": 1, "refreshed_indices": []})()
+        ),
     )
     monkeypatch.setattr(
         services,
@@ -1763,7 +1766,7 @@ def test_create_artifact_allows_streaming_coverage_clamped_to_source_availabilit
     monkeypatch.setattr(
         services,
         "run_streaming_ingest_sync",
-        lambda **kwargs: type("Result", (), {"periods_written": 1})(),
+        lambda **kwargs: type("Result", (), {"periods_written": 1, "refreshed_indices": []})(),
     )
     monkeypatch.setattr(services, "_upsert_artifact_record", lambda record, **_: record)
 
@@ -1827,7 +1830,7 @@ def test_create_artifact_rejects_streaming_coverage_with_late_start(
     monkeypatch.setattr(
         services,
         "run_streaming_ingest_sync",
-        lambda **kwargs: type("Result", (), {"periods_written": 1})(),
+        lambda **kwargs: type("Result", (), {"periods_written": 1, "refreshed_indices": []})(),
     )
     monkeypatch.setattr(services, "_upsert_artifact_record", lambda record, **_: record)
     monkeypatch.setattr(
@@ -1873,7 +1876,7 @@ def test_create_artifact_returns_409_when_streaming_plugin_has_no_periods(
     monkeypatch.setattr(
         services,
         "run_streaming_ingest_sync",
-        lambda **kwargs: type("Result", (), {"periods_written": 0})(),
+        lambda **kwargs: type("Result", (), {"periods_written": 0, "refreshed_indices": []})(),
     )
 
     with pytest.raises(services.HTTPException, match="Source has no data for the requested temporal scope"):
@@ -1921,7 +1924,7 @@ def test_create_artifact_overwrite_replaces_existing_icechunk_store_on_success(
         assert (store_path / "stale").read_text(encoding="utf-8") == "old"
         replacement.mkdir()
         (replacement / "fresh").write_text("new", encoding="utf-8")
-        return type("Result", (), {"periods_written": 1})()
+        return type("Result", (), {"periods_written": 1, "refreshed_indices": []})()
 
     def fake_coverage(*args: object, **kwargs: object) -> dict[str, object]:
         assert kwargs["icechunk_path"] == str(replacement_path.resolve())
@@ -1994,7 +1997,7 @@ def test_create_artifact_overwrite_restores_store_when_record_write_fails(
         assert isinstance(replacement, Path)
         replacement.mkdir()
         (replacement / "fresh").write_text("new", encoding="utf-8")
-        return type("Result", (), {"periods_written": 1})()
+        return type("Result", (), {"periods_written": 1, "refreshed_indices": []})()
 
     monkeypatch.setattr(services, "run_streaming_ingest_sync", fake_run_streaming_ingest_sync)
     monkeypatch.setattr(
@@ -2052,7 +2055,7 @@ def test_first_ingest_record_failure_is_not_masked_by_impossible_swap_rollback(
 
     def fake_ingest(**kwargs: object) -> object:
         store_path.mkdir()
-        return type("Result", (), {"periods_written": 1})()
+        return type("Result", (), {"periods_written": 1, "refreshed_indices": []})()
 
     monkeypatch.setattr(services, "run_streaming_ingest_sync", fake_ingest)
     monkeypatch.setattr(
@@ -2128,7 +2131,7 @@ def test_create_artifact_restores_pre_ingest_snapshot_when_pyramid_record_write_
 
     def fake_ingest(**kwargs: object) -> object:
         (store_path / "state").write_text("post-append", encoding="utf-8")
-        return type("Result", (), {"periods_written": 1})()
+        return type("Result", (), {"periods_written": 1, "refreshed_indices": []})()
 
     def fake_normalize(path: Path, *args: object, **kwargs: object) -> services._StoreNormalizationResult:
         staging = path.with_name(f"{path.name}.rebuild")
@@ -2215,7 +2218,7 @@ def test_create_artifact_does_not_restore_old_store_when_post_commit_cleanup_fai
     def fake_ingest(**kwargs: object) -> object:
         replacement_path.mkdir()
         (replacement_path / "state").write_text("new", encoding="utf-8")
-        return type("Result", (), {"periods_written": 2})()
+        return type("Result", (), {"periods_written": 2, "refreshed_indices": []})()
 
     monkeypatch.setattr(services, "run_streaming_ingest_sync", fake_ingest)
     monkeypatch.setattr(
@@ -2398,7 +2401,7 @@ def test_create_artifact_overwrite_keeps_existing_store_when_replacement_is_inva
         replacement = kwargs["store_path"]
         assert replacement == replacement_path
         replacement_path.mkdir()
-        return type("Result", (), {"periods_written": 1})()
+        return type("Result", (), {"periods_written": 1, "refreshed_indices": []})()
 
     monkeypatch.setattr(services, "run_streaming_ingest_sync", incomplete_ingest)
     monkeypatch.setattr(

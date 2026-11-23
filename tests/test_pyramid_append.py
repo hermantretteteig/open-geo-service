@@ -7,6 +7,7 @@ built from scratch over the same periods, level by level and array by array.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,8 @@ zarr = pytest.importorskip("zarr")
 from open_geo_service.data_accessor.services.accessor import open_icechunk_dataset  # noqa: E402
 from open_geo_service.data_manager.services import downloader  # noqa: E402
 from open_geo_service.ingestions import services  # noqa: E402
-from open_geo_service.streaming import BaseDatasetPlugin, normalize_period  # noqa: E402
+from open_geo_service.streaming import BaseDatasetPlugin, normalize_period, orchestrator  # noqa: E402
+from open_geo_service.streaming.store import read_fetched_at  # noqa: E402
 
 # Odd sizes, so every level trims a trailing row or column.
 NY, NX = 101, 75
@@ -31,12 +33,14 @@ class _GridPlugin(BaseDatasetPlugin):
     def __init__(self, *, categorical: bool = False) -> None:
         self.available = [f"2026-01-0{day}" for day in (1, 2, 3)]
         self.categorical = categorical
+        # Periods the source now serves final values for, which differ from the preliminary ones.
+        self.final: set[str] = set()
 
     async def periods(self, start: str, end: str) -> list[str]:
         return [period for period in self.available if start <= period <= end]
 
     def fetch_period(self, period_id: str, bbox: list[float], **params: object) -> Any:
-        rng = np.random.default_rng(int(period_id[-2:]))
+        rng = np.random.default_rng(int(period_id[-2:]) + (100 if period_id in self.final else 0))
         if self.categorical:
             values = rng.integers(1, 6, size=(NY, NX)).astype("float32")
         else:
@@ -57,7 +61,14 @@ def pyramid_sync(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, A
     monkeypatch.setattr(downloader, "_PYRAMID_TARGET_TILE_SIZE", 24)
     monkeypatch.setattr(services, "ARTIFACTS_DIR", tmp_path / "artifacts")
     monkeypatch.setattr(services, "ARTIFACTS_INDEX_PATH", tmp_path / "artifacts" / "records.json")
-    state: dict[str, Any] = {"plugin": _GridPlugin(), "store": tmp_path / "synced.icechunk", "rebuilds": 0}
+    state: dict[str, Any] = {
+        "plugin": _GridPlugin(),
+        "store": tmp_path / "synced.icechunk",
+        "rebuilds": 0,
+        # A fixed clock, so a synced store and one rebuilt from scratch record the same `fetched_at`.
+        "now": datetime(2026, 2, 1, tzinfo=UTC),
+    }
+    monkeypatch.setattr(orchestrator, "utc_now", lambda: state["now"])
     monkeypatch.setattr(services, "_load_streaming_plugin", lambda *args, **kwargs: state["plugin"])
     monkeypatch.setattr(downloader, "get_icechunk_path", lambda _: state["store"])
 
@@ -78,7 +89,7 @@ def pyramid_sync(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, A
     return state
 
 
-def _ingest(state: dict[str, Any], end: str) -> services.ArtifactRecord:
+def _ingest(state: dict[str, Any], end: str, refresh_periods: list[str] | None = None) -> services.ArtifactRecord:
     return services.create_artifact(
         dataset=state["dataset"],
         start="2026-01-01",
@@ -87,6 +98,7 @@ def _ingest(state: dict[str, Any], end: str) -> services.ArtifactRecord:
         country_code=None,
         overwrite=False,
         publish=False,
+        refresh_periods=refresh_periods,
     )
 
 
@@ -95,11 +107,17 @@ def _root(store_path: Path) -> Any:
     return zarr.open_group(repo.readonly_session("main").store, mode="r")
 
 
-def _assert_same_store(synced: Path, rebuilt: Path) -> None:
+def _assert_same_store(synced: Path, rebuilt: Path, *, fetched_at_from_level_0: bool = False) -> None:
+    """Compare two stores array by array.
+
+    ``fetched_at_from_level_0`` is for a synced store whose periods were fetched at other times
+    than the rebuild's: its ``fetched_at`` is then compared with its own level 0 instead.
+    """
     a, b = _root(synced), _root(rebuilt)
     assert dict(a.attrs) == dict(b.attrs)
     assert sorted(a.group_keys()) == sorted(b.group_keys())
     assert len(list(a.group_keys())) >= 3, "precondition: a pyramid with several levels"
+    assert "fetched_at" not in a, "the root carries the time axis alone"
     for path in ["", *sorted(a.group_keys())]:
         ga, gb = (a[path], b[path]) if path else (a, b)
         assert dict(ga.attrs) == dict(gb.attrs), path
@@ -109,6 +127,8 @@ def _assert_same_store(synced: Path, rebuilt: Path) -> None:
             where = f"{path}/{name}"
             assert xa.shape == xb.shape, where
             assert xa.dtype == xb.dtype, where
+            if name == "fetched_at" and fetched_at_from_level_0:
+                xb = a["0"][name]
             assert np.array_equal(xa[...], xb[...], equal_nan=True), where
             # Chunks, not shards: topozarr shards a small array over its whole time axis, and
             # an append keeps the shard the store was built with.
@@ -141,6 +161,29 @@ def test_sync_appends_to_every_level_and_matches_a_rebuild(
     with open_icechunk_dataset(synced) as stored:
         assert stored.sizes["t"] == 5
     _assert_same_store(synced, _rebuild(state, tmp_path, "2026-01-05"))
+
+
+@pytest.mark.parametrize("resampling", ["mean", "mode"])
+def test_a_refreshed_period_is_rewritten_on_every_level(
+    pyramid_sync: dict[str, Any], tmp_path: Path, resampling: str
+) -> None:
+    """A period replaced in place on level 0 gets its coarser levels rewritten, not a rebuild (CLIM-931)."""
+    state = pyramid_sync
+    state["plugin"] = _GridPlugin(categorical=resampling == "mode")
+    state["dataset"]["ingestion"]["resampling"] = resampling
+    _ingest(state, "2026-01-03")
+    synced = state["store"]
+
+    state["now"] = datetime(2026, 5, 1, tzinfo=UTC)
+    state["plugin"].final = {"2026-01-02"}
+    _ingest(state, "2026-01-03", refresh_periods=["2026-01-02"])
+
+    assert state["rebuilds"] == 1, "the refresh must not rebuild the pyramid"
+    initial = datetime(2026, 2, 1, tzinfo=UTC)
+    assert read_fetched_at(synced) == [initial, state["now"], initial]
+    # Every level matches a pyramid built from scratch over the same source values, and
+    # carries level 0's `t` and `fetched_at`.
+    _assert_same_store(synced, _rebuild(state, tmp_path, "2026-01-03"), fetched_at_from_level_0=True)
 
 
 def test_mode_levels_are_resampled_from_native_on_append(pyramid_sync: dict[str, Any], tmp_path: Path) -> None:

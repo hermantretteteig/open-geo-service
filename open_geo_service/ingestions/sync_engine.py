@@ -30,6 +30,7 @@ from open_geo_service.ingestions.schemas import (
     parse_declared_artifact_version,
 )
 from open_geo_service.publications.services import managed_dataset_id_for
+from open_geo_service.shared.provisional import refresh_after_from_template, refresh_due
 from open_geo_service.shared.time import (
     datetime_to_period_string,
     dekad_start,
@@ -39,7 +40,11 @@ from open_geo_service.shared.time import (
     utc_now,
     utc_today,
 )
-from open_geo_service.streaming.store import read_committed_period_ids
+from open_geo_service.streaming.store import (
+    read_committed_period_ids,
+    read_committed_period_ids_ordered,
+    read_fetched_at,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,8 +130,30 @@ def plan_sync(
         target_end = _default_target_end(period_type=period_type)
 
     if sync_kind == SyncKind.TEMPORAL:
+        refresh = _plan_refresh(source_dataset, latest_artifact, period_type)
+        refresh_only = SyncDetail(
+            source_dataset_id=latest_artifact.dataset_id,
+            sync_kind=sync_kind,
+            action=SyncAction.APPEND,
+            reason="provisional_periods_matured",
+            message=_sync_plan_message(
+                action=SyncAction.APPEND,
+                current_start=current_start,
+                current_end=current_end,
+                target_end=current_end,
+                refresh=refresh,
+                period_type=period_type,
+            ),
+            current_start=current_start,
+            current_end=current_end,
+            target_end=current_end,
+            target_end_source="current_coverage",
+            **_refresh_fields(refresh),
+        )
         next_period_start = next_period_string(current_end, period_type)
         if next_period_start > target_end:
+            if refresh:
+                return refresh_only
             return SyncDetail(
                 source_dataset_id=latest_artifact.dataset_id,
                 sync_kind=sync_kind,
@@ -149,6 +176,8 @@ def plan_sync(
         # available_periods is []    → plugin exists but nothing available → NO_OP
         # available_periods is [...]  → clamp target_end to the last available period
         if available_periods == []:
+            if refresh:
+                return refresh_only
             return SyncDetail(
                 source_dataset_id=latest_artifact.dataset_id,
                 sync_kind=sync_kind,
@@ -184,6 +213,7 @@ def plan_sync(
                 target_end=target_end,
                 delta_start=next_period_start,
                 delta_end=target_end,
+                refresh=refresh,
                 period_type=period_type,
             ),
             current_start=current_start,
@@ -193,6 +223,7 @@ def plan_sync(
             delta_start=next_period_start,
             delta_end=target_end,
             periods=periods_for_orchestrator,
+            **_refresh_fields(refresh),
         )
 
     # Release identity, independent of period_type. current_end/target_end stay
@@ -420,7 +451,7 @@ def run_sync(
     )
     dataset_id = managed_dataset_id_for(latest_artifact)
     logger.info(
-        "Sync plan for dataset '%s': action=%s reason=%s current=%s..%s target=%s delta=%s..%s",
+        "Sync plan for dataset '%s': action=%s reason=%s current=%s..%s target=%s delta=%s..%s refresh=%s..%s",
         dataset_id,
         sync_detail.action,
         sync_detail.reason,
@@ -429,6 +460,8 @@ def run_sync(
         sync_detail.target_end,
         sync_detail.delta_start,
         sync_detail.delta_end,
+        sync_detail.refresh_start,
+        sync_detail.refresh_end,
     )
 
     if sync_detail.action == SyncAction.NO_OP:
@@ -499,6 +532,7 @@ def run_sync(
         publish=publish,
         on_progress=on_progress,
         periods=sync_detail.periods,
+        refresh_periods=sync_detail.refresh_periods,
     )
     logger.info(
         "Sync completed for dataset '%s': artifact_id=%s action=%s",
@@ -509,17 +543,24 @@ def run_sync(
     return SyncResponse(
         sync_id=artifact.artifact_id,
         status="completed",
-        message=_sync_completed_message(sync_detail.action),
+        message=_sync_completed_message(sync_detail),
         dataset=get_dataset_fn(managed_dataset_id_for(artifact)),
         sync_detail=sync_detail,
     )
 
 
-def _sync_completed_message(action: SyncAction) -> str:
+def _sync_completed_message(detail: SyncDetail) -> str:
     """Return a user-facing completion message for the executed sync action."""
-    if action == SyncAction.APPEND:
+    if detail.action != SyncAction.APPEND:
+        return "Managed dataset was rematerialized against the latest planned upstream state."
+    if detail.refresh_start is None:
         return "Managed dataset was synced by appending missing periods to the committed store."
-    return "Managed dataset was rematerialized against the latest planned upstream state."
+    if detail.delta_start is None:
+        return "Managed dataset was synced by replacing preliminary periods with final values."
+    return (
+        "Managed dataset was synced by replacing preliminary periods with final values and "
+        "appending missing periods to the committed store."
+    )
 
 
 def _display_period(value: str, period_type: str) -> str:
@@ -554,9 +595,10 @@ def _sync_plan_message(
     current_start: str | None,
     current_end: str,
     target_end: str,
-    delta_start: str,
-    delta_end: str,
     period_type: str,
+    delta_start: str | None = None,
+    delta_end: str | None = None,
+    refresh: list[str] | None = None,
 ) -> str:
     """Return a human-readable sync plan summary.
 
@@ -566,9 +608,57 @@ def _sync_plan_message(
     """
     existing = _existing_coverage(current_start, current_end, period_type)
     if action == SyncAction.APPEND:
-        added = delta_start if delta_start == delta_end else f"{delta_start} through {delta_end}"
-        return f"Data exists for {existing}. Sync will add {added}."
+        steps: list[str] = []
+        if refresh:
+            steps.append(f"replace {_period_range(refresh[0], refresh[-1])} with final values")
+        if delta_start is not None and delta_end is not None:
+            steps.append(f"add {_period_range(delta_start, delta_end)}")
+        return f"Data exists for {existing}. Sync will {' and '.join(steps)}."
     return f"Data exists for {existing}. Sync will rematerialize the dataset through {target_end}."
+
+
+def _period_range(first: str, last: str) -> str:
+    return first if first == last else f"{first} through {last}"
+
+
+def _refresh_fields(refresh: list[str]) -> dict[str, Any]:
+    """The SyncDetail fields describing the periods a sync replaces with final values."""
+    if not refresh:
+        return {}
+    return {"refresh_start": refresh[0], "refresh_end": refresh[-1], "refresh_periods": refresh}
+
+
+def _plan_refresh(source_dataset: dict[str, Any], latest_artifact: ArtifactRecord, period_type: str) -> list[str]:
+    """The stored periods to fetch again because their final version is now expected (CLIM-931).
+
+    Empty unless the template declares ``sync.refresh_after`` and the store is appended to in
+    place; a rematerialization fetches every period again anyway. The window is read from the
+    template now, so changing it applies to existing stores at the next sync.
+
+    Periods mature in the order they were fetched, so the due ones are normally a short
+    contiguous run; when they are not, the span between the first and last is fetched again
+    whole. Only periods the source still serves are returned.
+    """
+    window = refresh_after_from_template(source_dataset)
+    if window is None or not _supports_append(source_dataset, latest_artifact):
+        return []
+    raw_artifact_path = _icechunk_path_for(latest_artifact)
+    store_path, _ = _resolve_local_artifact_path(raw_artifact_path)
+    if store_path is None:
+        return []
+    period_ids = read_committed_period_ids_ordered(store_path, period_type)
+    fetched_at = read_fetched_at(store_path)
+    if fetched_at is None or len(fetched_at) != len(period_ids):
+        return []
+    due = refresh_due(period_ids, fetched_at, period_type, window, utc_now())
+    if not due:
+        return []
+    span = period_ids[period_ids.index(due[0]) : period_ids.index(due[-1]) + 1]
+    available = _query_available_periods(source_dataset, span[0], span[-1])
+    if available is None:
+        return span
+    served = set(available)
+    return [period for period in span if period in served]
 
 
 def _query_available_periods(

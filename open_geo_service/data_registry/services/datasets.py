@@ -14,6 +14,7 @@ import yaml
 from open_geo_service import config as api_config
 from open_geo_service.data_registry import recipes
 from open_geo_service.ingestions.schemas import parse_declared_artifact_version
+from open_geo_service.shared.provisional import parse_refresh_after
 from open_geo_service.shared.time import SUPPORTED_PERIOD_TYPES
 from open_geo_service.shared.urls import is_segment_safe_id
 
@@ -510,6 +511,18 @@ def _validate_dataset_template(dataset: object, *, source: str) -> None:
                 f"Dataset template '{dataset_id}' in {source} has unsupported sync.execution "
                 f"'{sync_execution}'. Supported values: {supported}"
             )
+
+    refresh_after = sync_block.get("refresh_after") if isinstance(sync_block, dict) else None
+    if refresh_after is not None:
+        if sync_kind != "temporal":
+            raise ValueError(
+                f"Dataset template '{dataset_id}' in {source} declares sync.refresh_after with sync.kind "
+                f"'{sync_kind}'; only a temporal dataset refetches preliminary periods"
+            )
+        try:
+            parse_refresh_after(refresh_after)
+        except ValueError as exc:
+            raise ValueError(f"Dataset template '{dataset_id}' in {source}: {exc}") from exc
 
     ingestion = dataset.get("ingestion")
     # Static datasets may omit ingestion entirely — they exist as display-metadata

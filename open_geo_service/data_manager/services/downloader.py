@@ -317,7 +317,9 @@ def _write_root_time_coordinate(zarr_store: "Path | Any", ds: xr.Dataset, *, tim
     root_attrs = dict(root.attrs)
     if time_dim in root:
         del root[time_dim]
-    time_coord = xr.Dataset(coords={time_dim: ds[time_dim]})
+    # The axis alone: `ds[time_dim]` also carries the coordinates along it (`fetched_at`), which
+    # belong to the levels and would go stale here at the first append.
+    time_coord = xr.Dataset(coords={time_dim: ds[time_dim].reset_coords(drop=True)})
     time_coord.to_zarr(
         store_arg,
         mode="a",
@@ -333,41 +335,150 @@ def _dimension_names(arr: zarr.Array) -> tuple[str, ...]:
     return tuple(str(d) for d in (arr.metadata.dimension_names or ()))  # type: ignore[union-attr]
 
 
-def append_pyramid_levels(
-    store_path: Path,
-    *,
-    pyramid_method: str = "mean",
-    t_dim: str | None = None,
-    x_dim: str = "x",
-    y_dim: str = "y",
-) -> int | None:
-    """Extend every coarser level of a pyramid store to the periods level 0 has gained.
+class _PyramidLevels:
+    """An open pyramid store whose levels can be updated in place, one period at a time.
 
-    A streaming sync appends new periods to level 0 only, and rebuilding the pyramid to cover
-    them rewrites every period ever stored (CLIM-1237). Each level is reduced from the level
-    above in space only, never along time, so a new period's coarser levels depend on nothing
-    but that period's own slice of level 0. They are computed here as
-    ``write_to_icechunk_store`` computes them (topozarr's kernel from the level above, or a
-    resample from native for ``mode``) and committed in one commit, so the store matches a
-    full rebuild.
+    Each level is reduced from the level above in space only, never along time, so a period's
+    coarser levels depend on nothing but that period's own slice of level 0. ``write_periods``
+    computes them as ``write_to_icechunk_store`` does (topozarr's kernel from the level above,
+    or a resample from native for ``mode``), so an updated store matches a full rebuild.
+    """
+
+    def __init__(
+        self,
+        session: Any,
+        root: zarr.Group,
+        groups: list[zarr.Group],
+        t_dim: str,
+        *,
+        method: str,
+        x_dim: str,
+        y_dim: str,
+    ) -> None:
+        self.session = session
+        self.root = root
+        self.groups = groups
+        self.base = groups[0]
+        self.t_dim = t_dim
+        self.method = method
+        self.x_dim = x_dim
+        self.y_dim = y_dim
+        self.base_t = np.asarray(cast(zarr.Array, self.base[t_dim])[:])
+        self.total = int(self.base_t.shape[0])
+
+    def timed_arrays(self, group: zarr.Group) -> dict[str, zarr.Array]:
+        """Every array along time, the level's own time coordinate included."""
+        return {str(name): arr for name, arr in group.arrays() if _dimension_names(arr)[:1] == (self.t_dim,)}
+
+    def add_missing_fetched_at(self) -> None:
+        """Copy level 0's ``fetched_at`` to coarser levels of a store pyramided before it existed.
+
+        The first sync of such a store gives level 0 the array (NaT for its earlier periods); the
+        coarser levels get the same values here, rather than a rebuild of the whole pyramid.
+        """
+        from open_geo_service.shared.provisional import FETCHED_AT
+
+        if FETCHED_AT not in self.base:
+            return
+        source = cast(zarr.Array, self.base[FETCHED_AT])
+        for group in self.groups[1:]:
+            if FETCHED_AT in group or self.t_dim not in group:
+                continue
+            length = int(cast(zarr.Array, group[self.t_dim]).shape[0])
+            target = group.create_array(
+                FETCHED_AT,
+                shape=(length,),
+                chunks=source.chunks,
+                dtype=source.dtype,
+                fill_value=source.fill_value,
+                dimension_names=(self.t_dim,),
+                attributes=dict(source.attrs),
+            )
+            target[:] = source[:length]
+            for _, array in group.arrays():
+                dims = _dimension_names(array)
+                if len(dims) > 1 and dims[0] == self.t_dim:
+                    coordinates = str(array.attrs.get("coordinates") or "").split()
+                    if FETCHED_AT not in coordinates:
+                        array.attrs["coordinates"] = " ".join([*coordinates, FETCHED_AT])
+
+    def write_periods(self, indices: list[int]) -> None:
+        """Write every coarser level of the periods at ``indices`` from level 0.
+
+        Contiguous runs are written in batches as large as the pyramid build's own region budget
+        allows; one period always goes, however large.
+        """
+        from topozarr_core import block_reduce
+
+        native_resample = self.method in _NATIVE_RESAMPLE_METHODS
+        composable_method = "max" if native_resample else self.method
+        base_arrays = self.timed_arrays(self.base)
+        x_dim, y_dim, t_dim = self.x_dim, self.y_dim, self.t_dim
+        spatial = {
+            name
+            for name, arr in base_arrays.items()
+            if {x_dim, y_dim} & set(_dimension_names(arr)) and np.issubdtype(arr.dtype, np.number)
+        }
+        step_bytes = max(
+            (int(np.prod(base_arrays[name].shape[1:])) * base_arrays[name].dtype.itemsize for name in spatial),
+            default=1,
+        )
+        batch = max(1, _PYRAMID_MAX_REGION_BYTES // step_bytes)
+        windows: list[tuple[int, int]] = []
+        for index in sorted(set(indices)):
+            if windows and windows[-1][1] == index and index - windows[-1][0] < batch:
+                windows[-1] = (windows[-1][0], index + 1)
+            else:
+                windows.append((index, index + 1))
+
+        base_ds = xr.open_zarr(self.session.store, group="0", zarr_format=3) if native_resample and spatial else None
+        try:
+            for a, b in windows:
+                for name, base_arr in base_arrays.items():
+                    if name not in spatial:
+                        values = base_arr[a:b]
+                        for group in self.groups[1:]:
+                            cast(zarr.Array, group[name])[a:b] = values
+                        continue
+                    if base_ds is not None:
+                        # As _overwrite_native_resampled_levels: from native, not the level above.
+                        window = {t_dim: slice(a, b)}
+                        native = base_ds[name].isel(window).load()
+                        for level, group in enumerate(self.groups[1:], start=1):
+                            target = cast(zarr.Array, group[name])
+                            _write_native_resampled(native, target, window, x_dim, y_dim, level, self.method)
+                        continue
+                    # As topozarr's downsample_level: each level from the stored level above.
+                    stride = tuple(2 if d in (x_dim, y_dim) else 1 for d in _dimension_names(base_arr))
+                    values = np.ascontiguousarray(base_arr[a:b])
+                    for group in self.groups[1:]:
+                        target = cast(zarr.Array, group[name])
+                        reduced = block_reduce(values, stride, composable_method, target.fill_value, True)
+                        reduced = reduced[(slice(None), *(slice(0, s) for s in target.shape[1:]))]
+                        values = np.ascontiguousarray(reduced.astype(target.dtype, copy=False))
+                        target[a:b] = values
+        finally:
+            if base_ds is not None:
+                base_ds.close()
+
+
+def _open_pyramid_levels(
+    store_path: Path, *, pyramid_method: str, t_dim: str | None, x_dim: str, y_dim: str
+) -> _PyramidLevels | None:
+    """Open a pyramid store for an in-place update, or None when it cannot take one.
+
+    None for a store that is not a pyramid, whose levels were reduced with another method than
+    the template's current one, or whose levels or time dim cannot be identified. The caller
+    rebuilds then.
 
     ``t_dim`` defaults to the leading dim of level 0's data variables: publication renames
     time aliases to ``t``, but a climatology keeps its own (``dayofyear``).
-
-    Returns the number of periods appended, 0 when the levels are already current, or None
-    when the store is not a pyramid that level 0 has simply grown past. The caller rebuilds
-    then.
     """
     import icechunk
-    import numpy as np
-    from topozarr_core import block_reduce
 
     from open_geo_service.stac.media_types import attributes_declare_multiscales
 
     method = _normalize_resampling_method(pyramid_method)
-    native_resample = method in _NATIVE_RESAMPLE_METHODS
-    composable_method = "max" if native_resample else method
-
     repo = icechunk.Repository.open(icechunk.local_filesystem_storage(str(store_path)))
     session = repo.writable_session("main")
     root = zarr.open_group(session.store, mode="r+")
@@ -377,7 +488,7 @@ def append_pyramid_levels(
     multiscales: Any = root_attrs["multiscales"]
     if multiscales.get("resampling_method") != method:
         # The template's method changed since the pyramid was built. Levels reduced one way
-        # must not be extended another, so the rebuild redoes them all.
+        # must not be updated another, so the rebuild redoes them all.
         return None
     level_names = sorted((k for k in root.group_keys() if k.isdigit()), key=int)
     if level_names != [str(i) for i in range(len(level_names))] or len(level_names) != len(multiscales["layout"]):
@@ -395,19 +506,41 @@ def append_pyramid_levels(
         t_dim = leading.pop()
     if t_dim not in base:
         return None
-    base_t = np.asarray(cast(zarr.Array, base[t_dim])[:])
-    total = int(base_t.shape[0])
+    return _PyramidLevels(session, root, groups, t_dim, method=method, x_dim=x_dim, y_dim=y_dim)
 
-    def timed_arrays(group: zarr.Group) -> dict[str, zarr.Array]:
-        # Every array along time, the level's own time coordinate included.
-        return {str(name): arr for name, arr in group.arrays() if _dimension_names(arr)[:1] == (t_dim,)}
 
-    base_arrays = timed_arrays(base)
+def append_pyramid_levels(
+    store_path: Path,
+    *,
+    pyramid_method: str = "mean",
+    t_dim: str | None = None,
+    x_dim: str = "x",
+    y_dim: str = "y",
+) -> int | None:
+    """Extend every coarser level of a pyramid store to the periods level 0 has gained.
+
+    A streaming sync appends new periods to level 0 only, and rebuilding the pyramid to cover
+    them rewrites every period ever stored (CLIM-1237). The new periods' coarser levels are
+    computed by ``_PyramidLevels.write_periods`` and committed in one commit, so the store
+    matches a full rebuild.
+
+    Returns the number of periods appended, 0 when the levels are already current, or None
+    when the store is not a pyramid that level 0 has simply grown past. The caller rebuilds
+    then.
+    """
+    pyramid = _open_pyramid_levels(store_path, pyramid_method=pyramid_method, t_dim=t_dim, x_dim=x_dim, y_dim=y_dim)
+    if pyramid is None:
+        return None
+    session, root, groups, base, t_dim = pyramid.session, pyramid.root, pyramid.groups, pyramid.base, pyramid.t_dim
+    base_t, total = pyramid.base_t, pyramid.total
+
+    base_arrays = pyramid.timed_arrays(base)
     if any(arr.shape[0] != total for arr in base_arrays.values()):
         return None
+    pyramid.add_missing_fetched_at()
     start: int | None = None
     for group in groups[1:]:
-        arrays = timed_arrays(group)
+        arrays = pyramid.timed_arrays(group)
         if set(arrays) != set(base_arrays):
             return None
         lengths = {arr.shape[0] for arr in arrays.values()}
@@ -439,58 +572,52 @@ def append_pyramid_levels(
     if appended == 0 and (root_times is None or len(root_times) == total):
         return 0
 
-    spatial = {
-        name
-        for name, arr in base_arrays.items()
-        if {x_dim, y_dim} & set(_dimension_names(arr)) and np.issubdtype(arr.dtype, np.number)
-    }
     for group in groups[1:]:
-        for arr in timed_arrays(group).values():
+        for arr in pyramid.timed_arrays(group).values():
             arr.resize((total, *arr.shape[1:]))
-
-    base_ds = xr.open_zarr(session.store, group="0", zarr_format=3) if native_resample and spatial else None
-    # Whole periods per batch, as many as fit the pyramid build's own region budget. One
-    # period always goes, however large.
-    step_bytes = max(
-        (int(np.prod(base_arrays[name].shape[1:])) * base_arrays[name].dtype.itemsize for name in spatial),
-        default=1,
-    )
-    batch = max(1, _PYRAMID_MAX_REGION_BYTES // step_bytes)
-    try:
-        for a in range(start, total, batch):
-            b = min(a + batch, total)
-            for name, base_arr in base_arrays.items():
-                if name not in spatial:
-                    values = base_arr[a:b]
-                    for group in groups[1:]:
-                        cast(zarr.Array, group[name])[a:b] = values
-                    continue
-                if base_ds is not None:
-                    # As _overwrite_native_resampled_levels: from native, not the level above.
-                    window = {t_dim: slice(a, b)}
-                    native = base_ds[name].isel(window).load()
-                    for level, group in enumerate(groups[1:], start=1):
-                        target = cast(zarr.Array, group[name])
-                        _write_native_resampled(native, target, window, x_dim, y_dim, level, method)
-                    continue
-                # As topozarr's downsample_level: each level from the stored level above.
-                stride = tuple(2 if d in (x_dim, y_dim) else 1 for d in _dimension_names(base_arr))
-                values = np.ascontiguousarray(base_arr[a:b])
-                for group in groups[1:]:
-                    target = cast(zarr.Array, group[name])
-                    reduced = block_reduce(values, stride, composable_method, target.fill_value, True)
-                    reduced = reduced[(slice(None), *(slice(0, s) for s in target.shape[1:]))]
-                    values = np.ascontiguousarray(reduced.astype(target.dtype, copy=False))
-                    target[a:b] = values
-    finally:
-        if base_ds is not None:
-            base_ds.close()
+    pyramid.write_periods(list(range(start, total)))
 
     if root_times is not None:
         _write_root_time_coordinate(session.store, xr.Dataset(coords={t_dim: base_times}), time_dim=t_dim)
     session.commit(f"Appended {appended} period(s) to every pyramid level")
     logger.info("Appended %d period(s) to the pyramid levels of '%s'", appended, store_path.name)
     return appended
+
+
+def rewrite_pyramid_levels(
+    store_path: Path,
+    indices: list[int],
+    *,
+    pyramid_method: str = "mean",
+    t_dim: str | None = None,
+    x_dim: str = "x",
+    y_dim: str = "y",
+) -> int | None:
+    """Rewrite every coarser level of the periods at ``indices`` after level 0 replaced them.
+
+    A sync that refreshes a preliminary period writes it into its existing slot on level 0
+    (CLIM-931). Its coarser levels are recomputed in place by the kernel ``append_pyramid_levels``
+    uses, so the store matches a full rebuild, and committed in one commit.
+
+    Returns the number of periods rewritten, or None when the store is not a pyramid whose
+    levels all cover level 0's periods. The caller rebuilds then.
+    """
+    pyramid = _open_pyramid_levels(store_path, pyramid_method=pyramid_method, t_dim=t_dim, x_dim=x_dim, y_dim=y_dim)
+    if pyramid is None:
+        return None
+    base_arrays = pyramid.timed_arrays(pyramid.base)
+    for group in pyramid.groups:
+        arrays = pyramid.timed_arrays(group)
+        if set(arrays) != set(base_arrays) or any(arr.shape[0] != pyramid.total for arr in arrays.values()):
+            return None
+    if any(not 0 <= index < pyramid.total for index in indices):
+        return None
+    if not indices:
+        return 0
+    pyramid.write_periods(indices)
+    pyramid.session.commit(f"Rewrote {len(set(indices))} period(s) on every pyramid level")
+    logger.info("Rewrote %d period(s) on the pyramid levels of '%s'", len(set(indices)), store_path.name)
+    return len(set(indices))
 
 
 def _get_cache_prefix(dataset: dict[str, Any]) -> str:

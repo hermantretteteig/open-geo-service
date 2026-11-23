@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Any
 
 from fastapi import HTTPException
@@ -13,6 +14,7 @@ from open_geo_service.extents import services as extent_services
 from open_geo_service.ingestions import services
 from open_geo_service.ingestions.schemas import ArtifactRecord, SyncAction, SyncResponse
 from open_geo_service.jobs.models import DATASET_UPDATED_EVENT_TYPE, JobEventDraft, JobExecutionResult
+from open_geo_service.shared.time import datetime_to_period_string, parse_period_string_to_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -148,19 +150,33 @@ def sync_update_events(dataset_id: str, response: SyncResponse) -> list[JobEvent
         }
     ):
         return []
+    # A rematerialization may rewrite every historical value, so workflows must process the
+    # complete post-update coverage rather than only the periods after the old boundary. An
+    # append that replaces preliminary periods changed everything from the first of them.
+    previous_end = detail.current_end if detail.action == SyncAction.APPEND else None
+    if previous_end is not None and detail.refresh_start is not None and response.dataset is not None:
+        previous_end = _period_before(detail.refresh_start, response.dataset.period_type)
     return [
         dataset_update_event(
             dataset_id=dataset_id,
             artifact_id=response.sync_id,
             action=detail.action.value,
-            # A rematerialization may rewrite every historical value, so workflows
-            # must process the complete post-update coverage rather than only the
-            # periods after the old boundary.
-            previous_end=detail.current_end if detail.action == SyncAction.APPEND else None,
+            previous_end=previous_end,
             current_start=detail.current_start,
             current_end=detail.target_end,
         )
     ]
+
+
+def _period_before(period: str, period_type: str | None) -> str | None:
+    """The period just before ``period``, or None, meaning every period may have changed, when it cannot be told."""
+    if period_type is None:
+        return None
+    try:
+        start = parse_period_string_to_datetime(period)
+        return datetime_to_period_string(start - timedelta(microseconds=1), period_type)
+    except ValueError:
+        return None
 
 
 def record_inline_update(*, label: str, request: dict[str, Any], result: Any, events: list[JobEventDraft]) -> None:

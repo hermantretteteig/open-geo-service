@@ -13,8 +13,9 @@ explicitly deferred to later tickets.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from geozarr_toolkit import create_geozarr_attrs
 
@@ -131,6 +132,66 @@ def read_committed_period_ids_ordered(store_path: Path, period_type: str, *, tim
 def read_committed_period_ids(store_path: Path, period_type: str, *, time_dim: str = "t") -> set[str]:
     """Return period ids already committed in the store, or an empty set."""
     return set(read_committed_period_ids_ordered(store_path, period_type, time_dim=time_dim))
+
+
+def read_fetched_at(store_path: Path) -> list[datetime | None] | None:
+    """When each committed period was fetched, in stored order; None for unknown (NaT).
+
+    Aligned index for index with :func:`read_committed_period_ids_ordered`. Returns None when
+    the store has no ``fetched_at`` (a store written before it was recorded, or none at all),
+    which callers treat as every period being final. Reads only that 1-D array.
+    """
+    import pandas as pd
+
+    from open_geo_service.shared.provisional import FETCHED_AT
+
+    if not store_path.exists():
+        return None
+    try:
+        ds = _open_committed(store_path)
+        try:
+            if FETCHED_AT not in ds.variables:
+                return None
+            values = ds[FETCHED_AT].values
+        finally:
+            ds.close()
+    except Exception:
+        logger.debug("Could not read %s from %s", FETCHED_AT, store_path, exc_info=True)
+        return None
+    return [None if pd.isna(value) else pd.Timestamp(value).tz_localize(UTC).to_pydatetime() for value in values]
+
+
+def ensure_fetched_at(store: Any, *, group: str | None, time_dim: str) -> None:
+    """Give a store written before ``fetched_at`` existed the array, NaT for every period it holds.
+
+    Called before the first write of a run to an existing store, so that an append extends an
+    array as long as the time axis rather than creating a one-period one beside it. NaT means
+    unknown, which is treated as final. The data variables then name it as a coordinate, as a
+    first write would have; an append does not update their attributes.
+    """
+    import numpy as np
+    import xarray as xr
+    import zarr
+
+    from open_geo_service.shared.provisional import FETCHED_AT, FETCHED_AT_ENCODING
+
+    target = zarr.open_group(store, path=group or "", mode="r+")
+    if FETCHED_AT in target or time_dim not in target:
+        return
+    length = int(cast(zarr.Array, target[time_dim]).shape[0])
+    attrs = dict(target.attrs)
+    unknown = xr.Dataset(coords={FETCHED_AT: (time_dim, np.full(length, np.datetime64("NaT", "ns")))})
+    unknown[FETCHED_AT].encoding.update(FETCHED_AT_ENCODING)
+    unknown.to_zarr(store, group=group, mode="a", zarr_format=3)
+    target = zarr.open_group(store, path=group or "", mode="r+")
+    target.attrs.update(attrs)  # xarray replaced the group's attrs with the empty dataset's
+    for name, array in target.arrays():
+        dims = tuple(str(d) for d in (array.metadata.dimension_names or ()))  # type: ignore[union-attr]
+        if name in (FETCHED_AT, time_dim) or time_dim not in dims or len(dims) < 2:
+            continue
+        coordinates = str(array.attrs.get("coordinates") or "").split()
+        if FETCHED_AT not in coordinates:
+            array.attrs["coordinates"] = " ".join([*coordinates, FETCHED_AT])
 
 
 def is_store_empty(store_path: Path) -> bool:
