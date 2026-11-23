@@ -9,8 +9,8 @@
     population analysed).
   source: Integrated Food Security Phase Classification (IPC)
   source_url: https://data.humdata.org/organization/ipc
-  license:
-    name: Public Domain / No restrictions
+  # HDX lists IPC's datasets as "Public Domain / No restrictions (CC0)".
+  license: CC0-1.0
   providers:
     - {name: Integrated Food Security Phase Classification (IPC), url: https://www.ipcinfo.org, roles: [producer]}
   period_type: monthly

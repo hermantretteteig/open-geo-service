@@ -261,7 +261,7 @@ them is a breach, and share-alike attaches to a publicly served derived database
 | **IDs**            | `ipc_areas` (polygons), `ipc_food_security` (table)                                         |
 | **Identity**       | The area name, as IPC's tables give it                                                      |
 | **Coverage**       | This instance's country, where IPC or Cadre Harmonisé analyses it                           |
-| **Licence**        | Public domain                                                                               |
+| **Licence**        | CC0-1.0 (public domain)                                                                     |
 | **Source**         | [IPC's datasets on the Humanitarian Data Exchange](https://data.humdata.org/organization/ipc) |
 
 IPC publishes each country's analyses on HDX itself, as `<country>-acute-food-insecurity-country-data`,

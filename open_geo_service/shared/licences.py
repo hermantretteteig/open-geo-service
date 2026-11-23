@@ -112,8 +112,6 @@ _SPDX_OBLIGATIONS: dict[str, frozenset[str]] = {
 # describe a restrictive source publishes it as freely reusable, which is the laundering this
 # module exists to prevent.
 _KNOWN_NAMED_LICENCES: dict[str, frozenset[str]] = {
-    # HDX's licence `other-pd-nr`, which it titles "Public Domain / No restrictions (CC0)".
-    "public domain / no restrictions": frozenset(),
     # "free of charge, worldwide, non-exclusive, royalty free and perpetual", for "any purpose
     # in so far as it is lawful", with clear attribution to Copernicus required.
     "licence to use copernicus products": frozenset({ATTRIBUTION}),
