@@ -448,7 +448,7 @@ The response reports the window that was actually ingested, under `dataset.exten
 
 Layers whose grid exceeds 1024×1024 cells (about 1.05 megapixels, counted as `nx × ny` rather than per axis) are stored as a multiscale pyramid so the map stays fast when zoomed out. Coarser levels sit beside the full-resolution level 0, which analytics keeps reading, so **analysis results do not change** and the persistent cost is roughly +33% storage.
 
-Building one is not free, though. Level 0 is rewritten rather than kept as-is — the pyramid writer re-chunks it to its own target chunk size — the rebuild goes to a sibling store and is swapped in, so it needs transient disk for a second copy, and it takes longer than a flat write (measured at roughly 2.4× on a 2 GB store, in exchange for around 6× less peak memory).
+Building one is not free, though. Level 0 is rewritten rather than kept as-is — the pyramid writer re-chunks it to its own target chunk size — the rebuild is a new commit in the same store, so it needs disk for a second copy until the old version is collected an hour later, and it takes longer than a flat write (measured at roughly 2.4× on a 2 GB store, in exchange for around 6× less peak memory).
 
 Levels are aggregated from the full-resolution data, and `ingestion.resampling` controls how:
 

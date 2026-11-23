@@ -201,17 +201,10 @@ async def _services() -> AsyncGenerator[None]:
     notification_replay: asyncio.Task[None] | None = None
     derived_refresh: asyncio.Task[None] | None = None
     if not api_config.is_read_only():
-        # Before any job is recovered, so no pyramid rebuild can be in progress. A read-only
-        # instance may share its data directory with a writing one, so it leaves them alone.
-        from open_geo_service.ingestions.services import (
-            collect_pending_garbage_everywhere,
-            remove_leftover_rebuilds,
-        )
+        # A read-only instance may share its data directory with a writing one, so it leaves
+        # the stores alone.
+        from open_geo_service.ingestions.services import collect_pending_garbage_everywhere
 
-        try:
-            remove_leftover_rebuilds()
-        except Exception:
-            logger.exception("Could not remove leftover pyramid rebuilds; continuing startup")
         try:
             collect_pending_garbage_everywhere()
         except Exception:

@@ -576,7 +576,7 @@ def test_a_multi_period_sync_never_reaches_the_renderer(tmp_path: Path, monkeypa
             )
 
     store_path = tmp_path / "streaming.zarr"
-    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path: not path.exists())
+    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path, **_: not path.exists())
 
     result = streaming_orchestrator.run_streaming_ingest_sync(
         plugin=_Plugin(),

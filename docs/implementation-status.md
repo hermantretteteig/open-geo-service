@@ -199,7 +199,7 @@ Implemented sync behavior:
 - static datasets return `not_syncable`
 - plugin `periods()` clamps target end to actually available data before execution
 - append execution reuses the planned source delta and writes only missing periods to the committed Icechunk store
-- rematerialization builds and validates the complete contiguous union in a sibling store before publication
+- rematerialization builds and validates the complete contiguous union on a temporary branch of the store, then moves `main` to it in one step
 - artifact records keep caller request scope as provenance and cumulative realized store coverage separately
 - existing stores are updated from a planned contiguous union; earlier or gapped ranges rematerialize in ascending order
 

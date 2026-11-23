@@ -113,7 +113,7 @@ def _grid_spec_from_dataset(ds: xr.Dataset, *, time_dim: str, x_dim: str, y_dim:
     )
 
 
-def _assert_appendable_axes(store_path: Path, ds: xr.Dataset, *, x_dim: str, y_dim: str) -> None:
+def _assert_appendable_axes(store_path: Path, ds: xr.Dataset, *, x_dim: str, y_dim: str, branch: str = "main") -> None:
     """Refuse to append a period whose spatial axes disagree with the committed store.
 
     Normalisation reorders rows (y descending) and columns (longitudes rolled to −180…180). An
@@ -128,7 +128,7 @@ def _assert_appendable_axes(store_path: Path, ds: xr.Dataset, *, x_dim: str, y_d
     """
     from open_geo_service.streaming.store import read_committed_spatial_coords
 
-    stored = read_committed_spatial_coords(store_path, x_dim=x_dim, y_dim=y_dim)
+    stored = read_committed_spatial_coords(store_path, x_dim=x_dim, y_dim=y_dim, branch=branch)
     if stored is None:
         return  # nothing committed to disagree with, or a store we cannot read
     for axis in (y_dim, x_dim):
@@ -162,8 +162,9 @@ async def run_streaming_ingest(
     save_cursor: Callable[[dict[str, Any]], None] | None = None,
     periods: list[str] | None = None,
     committed_periods: list[str] | None = None,
+    branch: str = "main",
 ) -> StreamingIngestResult:
-    """Stream one dataset into a flat Zarr v3 store one period at a time.
+    """Stream one dataset into a flat Zarr v3 store one period at a time, committing each to *branch*.
 
     Resume policy:
     - committed store state is authoritative
@@ -192,7 +193,7 @@ async def run_streaming_ingest(
     committed = (
         set(committed_periods)
         if committed_periods is not None
-        else read_committed_period_ids(store_path, period_type, time_dim=time_dim)
+        else read_committed_period_ids(store_path, period_type, time_dim=time_dim, branch=branch)
     )
     pending = [period for period in all_periods if period not in committed]
     if not pending:
@@ -204,7 +205,7 @@ async def run_streaming_ingest(
 
     if committed:
         is_first_write = False
-    elif is_store_empty(store_path):
+    elif is_store_empty(store_path, branch=branch):
         is_first_write = True
     else:
         close_ingestion_plugin(plugin)
@@ -294,19 +295,19 @@ async def run_streaming_ingest(
                         f"expected {expected_spatial_shape}"
                     )
 
-                session = repo.writable_session("main")
+                session = repo.writable_session(branch)
                 if is_first_write:
                     ds.to_zarr(session.store, mode="w", zarr_format=3)
                     is_first_write = False
                 else:
                     if not axes_checked:
-                        _assert_appendable_axes(store_path, ds, x_dim=x_dim, y_dim=y_dim)
+                        _assert_appendable_axes(store_path, ds, x_dim=x_dim, y_dim=y_dim, branch=branch)
                         # Where the data actually lives. A store promoted to a pyramid by an
                         # earlier sync keeps its variables in level groups, and appending at the
                         # root would create a second one-timestep array beside the pyramid,
                         # leaving the store unopenable. Resolved once per sync, since promotion
                         # only happens between syncs.
-                        append_group = committed_data_group(store_path)
+                        append_group = committed_data_group(store_path, branch=branch)
                         axes_checked = True
                     # xarray replaces the group's attrs with the period's on append. At the root
                     # write_geozarr_attrs restores them below; a pyramid level's are its own.
@@ -355,7 +356,8 @@ async def run_streaming_ingest(
     # Prune intermediate ingest snapshots: each period commit created one snapshot;
     # only the final HEAD state needs to be retained.  expire_snapshots marks older
     # snapshots as expired without deleting chunk data — garbage_collect would be
-    # needed to reclaim manifest storage.  The "main" branch ref preserves HEAD.
+    # needed to reclaim manifest storage.  Every branch keeps its tip, so the branch written to,
+    # ``main`` and an ingest's rollback branch all survive.
     from datetime import datetime, timezone
 
     try:
@@ -384,6 +386,7 @@ def run_streaming_ingest_sync(
     save_cursor: Callable[[dict[str, Any]], None] | None = None,
     periods: list[str] | None = None,
     committed_periods: list[str] | None = None,
+    branch: str = "main",
 ) -> StreamingIngestResult:
     """Synchronous wrapper for threaded job execution.
 
@@ -413,6 +416,7 @@ def run_streaming_ingest_sync(
             save_cursor=save_cursor,
             periods=periods,
             committed_periods=committed_periods,
+            branch=branch,
         )
     )
 
@@ -425,12 +429,13 @@ def run_static_ingest_sync(
     bbox: list[float],
     store_path: Path,
     is_cancel_requested: Callable[[], bool] | None = None,
+    branch: str = "main",
 ) -> StreamingIngestResult:
     """Fetch a static dataset without a time axis once and write it as a ``(y, x)`` store (CLIM-1448).
 
     The counterpart of a streaming ingest's first write, for a plugin implementing ``fetch``:
-    there are no periods to plan, append or resume, so the whole dataset is one commit. The
-    caller hands it an empty path (a new store, or a replacement beside the published one).
+    there are no periods to plan, append or resume, so the whole dataset is one commit, to
+    *branch*: ``main`` of a new store, or the branch a replacement is built on.
     """
     from open_geo_service.jobs.models import JobCancelledError
 
@@ -485,7 +490,7 @@ def run_static_ingest_sync(
                 ds, cf_attrs_from_template(dataset), variable=(dataset or {}).get("variable"), overwrite=True
             )
             _check_cancelled()
-            session = open_or_create_repo(store_path).writable_session("main")
+            session = open_or_create_repo(store_path).writable_session(branch)
             ds.to_zarr(session.store, mode="w", zarr_format=3)
             write_geozarr_attrs(session.store, spec=spec, bbox=bbox)
             session.commit("ingest: static")

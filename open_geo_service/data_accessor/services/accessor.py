@@ -103,14 +103,15 @@ def get_data_coverage_for_paths(
     *,
     zarr_path: str | None = None,
     icechunk_path: str | None = None,
+    branch: str = "main",
 ) -> dict[str, Any]:
-    """Return coverage metadata for the concrete files created for one artifact."""
+    """Return coverage metadata for the concrete files created for one artifact, at *branch* of an Icechunk store."""
     provided = sum(value is not None for value in (zarr_path, icechunk_path))
     if provided != 1:
         raise ValueError("Coverage calculation requires exactly one artifact source")
 
     if icechunk_path is not None:
-        ds = open_icechunk_dataset(icechunk_path)
+        ds = open_icechunk_dataset(icechunk_path, branch=branch)
     else:
         assert zarr_path is not None
         ds = open_zarr_dataset(zarr_path)
@@ -211,8 +212,8 @@ def _open_zarr_group(store: Any, group: str | None, *, chunks: Any) -> xr.Datase
     return xr.open_zarr(store, group=group, zarr_format=3, chunks=chunks)  # type: ignore[no-any-return]
 
 
-def open_icechunk_dataset(store_path: str | Path, *, merge_time: bool = True) -> xr.Dataset:
-    """Open an Icechunk-backed dataset through a readonly repository session.
+def open_icechunk_dataset(store_path: str | Path, *, merge_time: bool = True, branch: str = "main") -> xr.Dataset:
+    """Open an Icechunk-backed dataset at the tip of *branch*, through a readonly session pinned to it.
 
     Dask chunks follow the stored chunks in space and merge them along time up to
     ``READ_CHUNK_TARGET_BYTES``, so computations are sized for dask rather than for storage.
@@ -226,7 +227,7 @@ def open_icechunk_dataset(store_path: str | Path, *, merge_time: bool = True) ->
         raise FileNotFoundError(f"Icechunk store not found: {path}")
     storage = icechunk.local_filesystem_storage(str(path))
     repo = icechunk.Repository.open(storage)
-    session = repo.readonly_session("main")
+    session = repo.readonly_session(branch)
     # Opened without dask first: it finds where the data lives (the root, or a pyramid's level
     # 0) and the stored chunk shape, before the dask chunks are chosen.
     group: str | None = None

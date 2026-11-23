@@ -137,7 +137,6 @@ def test_sync_appends_to_every_level_and_matches_a_rebuild(
 
     assert state["rebuilds"] == 1, "the sync must not rebuild the pyramid"
     assert artifact.coverage.temporal.end == "2026-01-05"
-    assert not synced.with_name(f"{synced.name}.rebuild").exists()
     with open_icechunk_dataset(synced) as stored:
         assert stored.sizes["t"] == 5
     _assert_same_store(synced, _rebuild(state, tmp_path, "2026-01-05"))

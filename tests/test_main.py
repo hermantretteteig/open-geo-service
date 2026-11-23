@@ -162,7 +162,6 @@ async def test_lifespan_runs_pending_store_collections_at_startup_and_periodical
         return 0
 
     monkeypatch.setattr(services, "collect_pending_garbage_everywhere", sweep)
-    monkeypatch.setattr(services, "remove_leftover_rebuilds", lambda: 0)
     backfills: list[Callable[[], bool]] = []
     monkeypatch.setattr(services, "measure_missing_statistics", lambda should_stop: backfills.append(should_stop) or 0)
     monkeypatch.setattr(main.api_config, "is_read_only", lambda: read_only)

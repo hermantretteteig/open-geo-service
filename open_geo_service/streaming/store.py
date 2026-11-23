@@ -37,7 +37,7 @@ def open_or_create_repo(store_path: Path) -> Any:
     return icechunk.Repository.create(storage)
 
 
-def committed_data_group(store_path: Path) -> str | None:
+def committed_data_group(store_path: Path, *, branch: str = "main") -> str | None:
     """Return the group holding the committed data variables: ``"0"``, or ``None`` for the root.
 
     A pyramided store keeps its data in level groups and leaves the root with only the time
@@ -55,7 +55,7 @@ def committed_data_group(store_path: Path) -> str | None:
         return None
     try:
         repo = open_or_create_repo(store_path)
-        store = repo.readonly_session("main").store
+        store = repo.readonly_session(branch).store
         ds = xr.open_zarr(store)
         try:
             if ds.data_vars:
@@ -71,17 +71,19 @@ def committed_data_group(store_path: Path) -> str | None:
         return None
 
 
-def _open_committed(store_path: Path) -> Any:
+def _open_committed(store_path: Path, branch: str) -> Any:
     """Open the committed store at whichever group actually holds the data."""
     import xarray as xr
 
     repo = open_or_create_repo(store_path)
-    store = repo.readonly_session("main").store
-    group = committed_data_group(store_path)
+    store = repo.readonly_session(branch).store
+    group = committed_data_group(store_path, branch=branch)
     return xr.open_zarr(store) if group is None else xr.open_zarr(store, group=group)
 
 
-def read_committed_period_ids_ordered(store_path: Path, period_type: str, *, time_dim: str = "t") -> list[str]:
+def read_committed_period_ids_ordered(
+    store_path: Path, period_type: str, *, time_dim: str = "t", branch: str = "main"
+) -> list[str]:
     """Return committed period ids in their stored coordinate order.
 
     Resume correctness is store-first: if the repository already contains a
@@ -103,7 +105,7 @@ def read_committed_period_ids_ordered(store_path: Path, period_type: str, *, tim
         # Level 0 rather than the root: the root time coordinate of a pyramided store is
         # rebuilt at the end of a sync, so mid-sync it lags the data and resume would
         # re-append periods that are already committed.
-        ds = _open_committed(store_path)
+        ds = _open_committed(store_path, branch)
         try:
             if time_dim not in ds.coords:
                 return []
@@ -128,12 +130,14 @@ def read_committed_period_ids_ordered(store_path: Path, period_type: str, *, tim
         return []
 
 
-def read_committed_period_ids(store_path: Path, period_type: str, *, time_dim: str = "t") -> set[str]:
+def read_committed_period_ids(
+    store_path: Path, period_type: str, *, time_dim: str = "t", branch: str = "main"
+) -> set[str]:
     """Return period ids already committed in the store, or an empty set."""
-    return set(read_committed_period_ids_ordered(store_path, period_type, time_dim=time_dim))
+    return set(read_committed_period_ids_ordered(store_path, period_type, time_dim=time_dim, branch=branch))
 
 
-def is_store_empty(store_path: Path) -> bool:
+def is_store_empty(store_path: Path, *, branch: str = "main") -> bool:
     """Return whether an Icechunk repository has no arrays, groups, or attrs.
 
     This is a conservative safety check for first-write detection. If the store
@@ -165,10 +169,10 @@ def is_store_empty(store_path: Path) -> bool:
         repo = open_or_create_repo(store_path)
         # Two is enough to answer "more than the initial snapshot?" — ancestry is lazy, so
         # this does not walk the history of a store with thousands of commits.
-        if len(list(itertools.islice(repo.ancestry(branch="main"), 2))) < 2:
+        if len(list(itertools.islice(repo.ancestry(branch=branch), 2))) < 2:
             logger.debug("%s has no commits beyond initialization; treating as empty", store_path)
             return True
-        session = repo.readonly_session("main")
+        session = repo.readonly_session(branch)
         try:
             root = zarr.open_group(session.store, mode="r")
         except GroupNotFoundError:
@@ -180,7 +184,7 @@ def is_store_empty(store_path: Path) -> bool:
         return False
 
 
-def read_committed_spatial_coords(store_path: Path, *, x_dim: str = "x", y_dim: str = "y") -> Any:
+def read_committed_spatial_coords(store_path: Path, *, x_dim: str = "x", y_dim: str = "y", branch: str = "main") -> Any:
     """The spatial coordinate arrays already committed to a store, or None.
 
     An append writes along the time axis only, leaving these as they are — so a period whose
@@ -196,7 +200,7 @@ def read_committed_spatial_coords(store_path: Path, *, x_dim: str = "x", y_dim: 
     if not store_path.exists():
         return None
     try:
-        ds = _open_committed(store_path)
+        ds = _open_committed(store_path, branch)
         try:
             if x_dim not in ds.coords or y_dim not in ds.coords:
                 return None

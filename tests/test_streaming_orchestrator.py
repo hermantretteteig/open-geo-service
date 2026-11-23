@@ -127,9 +127,11 @@ def test_orchestrator_uses_store_state_as_resume_truth(monkeypatch: pytest.Monke
     monkeypatch.setattr(
         streaming_orchestrator,
         "read_committed_period_ids",
-        lambda path, period_type, time_dim="t": _read_committed_periods_from_zarr(path, period_type, time_dim=time_dim),
+        lambda path, period_type, time_dim="t", **_: _read_committed_periods_from_zarr(
+            path, period_type, time_dim=time_dim
+        ),
     )
-    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path: not path.exists())
+    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path, **_: not path.exists())
 
     result = run_streaming_ingest_sync(
         plugin=_FakePlugin(),
@@ -200,9 +202,11 @@ def test_orchestrator_closes_each_fetched_dataset(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(
         streaming_orchestrator,
         "read_committed_period_ids",
-        lambda path, period_type, time_dim="t": _read_committed_periods_from_zarr(path, period_type, time_dim=time_dim),
+        lambda path, period_type, time_dim="t", **_: _read_committed_periods_from_zarr(
+            path, period_type, time_dim=time_dim
+        ),
     )
-    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path: not path.exists())
+    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path, **_: not path.exists())
 
     real_close = xr.Dataset.close
     plugin_closes = {"n": 0}
@@ -237,9 +241,11 @@ def test_orchestrator_infers_grid_when_plugin_has_no_probe(monkeypatch: pytest.M
     monkeypatch.setattr(
         streaming_orchestrator,
         "read_committed_period_ids",
-        lambda path, period_type, time_dim="t": _read_committed_periods_from_zarr(path, period_type, time_dim=time_dim),
+        lambda path, period_type, time_dim="t", **_: _read_committed_periods_from_zarr(
+            path, period_type, time_dim=time_dim
+        ),
     )
-    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path: not path.exists())
+    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path, **_: not path.exists())
 
     result = run_streaming_ingest_sync(
         plugin=_NoProbePlugin(),
@@ -294,9 +300,11 @@ def test_orchestrator_uses_plugin_crs_attr_as_inference_fallback(
     monkeypatch.setattr(
         streaming_orchestrator,
         "read_committed_period_ids",
-        lambda path, period_type, time_dim="t": _read_committed_periods_from_zarr(path, period_type, time_dim=time_dim),
+        lambda path, period_type, time_dim="t", **_: _read_committed_periods_from_zarr(
+            path, period_type, time_dim=time_dim
+        ),
     )
-    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path: not path.exists())
+    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path, **_: not path.exists())
 
     run_streaming_ingest_sync(
         plugin=_ProjectedNoProbePlugin(),
@@ -337,9 +345,11 @@ def test_orchestrator_stamps_cf_attrs_from_template(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         streaming_orchestrator,
         "read_committed_period_ids",
-        lambda path, period_type, time_dim="t": _read_committed_periods_from_zarr(path, period_type, time_dim=time_dim),
+        lambda path, period_type, time_dim="t", **_: _read_committed_periods_from_zarr(
+            path, period_type, time_dim=time_dim
+        ),
     )
-    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path: not path.exists())
+    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path, **_: not path.exists())
 
     run_streaming_ingest_sync(
         plugin=_PlaceholderAttrsPlugin(),
@@ -385,9 +395,11 @@ def test_orchestrator_stamps_the_template_on_its_variable_only(monkeypatch: pyte
     monkeypatch.setattr(
         streaming_orchestrator,
         "read_committed_period_ids",
-        lambda path, period_type, time_dim="t": _read_committed_periods_from_zarr(path, period_type, time_dim=time_dim),
+        lambda path, period_type, time_dim="t", **_: _read_committed_periods_from_zarr(
+            path, period_type, time_dim=time_dim
+        ),
     )
-    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path: not path.exists())
+    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path, **_: not path.exists())
 
     run_streaming_ingest_sync(
         plugin=_WithQualityPlugin(),
@@ -427,9 +439,9 @@ def test_orchestrator_refuses_destructive_first_write_when_existing_store_is_not
 
     monkeypatch.setattr(streaming_orchestrator, "open_or_create_repo", lambda path: repo)
     monkeypatch.setattr(
-        streaming_orchestrator, "read_committed_period_ids", lambda path, period_type, time_dim="t": set()
+        streaming_orchestrator, "read_committed_period_ids", lambda path, period_type, time_dim="t", **_: set()
     )
-    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path: False)
+    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path, **_: False)
 
     with pytest.raises(RuntimeError, match="committed periods could not be read"):
         run_streaming_ingest_sync(
@@ -459,9 +471,11 @@ def test_orchestrator_normalizes_invalid_plugin_batching_and_concurrency(
     monkeypatch.setattr(
         streaming_orchestrator,
         "read_committed_period_ids",
-        lambda path, period_type, time_dim="t": _read_committed_periods_from_zarr(path, period_type, time_dim=time_dim),
+        lambda path, period_type, time_dim="t", **_: _read_committed_periods_from_zarr(
+            path, period_type, time_dim=time_dim
+        ),
     )
-    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path: not path.exists())
+    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path, **_: not path.exists())
 
     result = run_streaming_ingest_sync(
         plugin=_InvalidPlugin(),
@@ -495,9 +509,9 @@ def test_orchestrator_does_not_skip_uncommitted_gaps_before_cursor(
     monkeypatch.setattr(
         streaming_orchestrator,
         "read_committed_period_ids",
-        lambda path, period_type, time_dim="t": {"2026-01-02"},
+        lambda path, period_type, time_dim="t", **_: {"2026-01-02"},
     )
-    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path: False)
+    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path, **_: False)
 
     result = run_streaming_ingest_sync(
         plugin=_FakePlugin(),
@@ -526,9 +540,9 @@ def test_orchestrator_rejects_spatial_shape_changes_across_appends(
 
     monkeypatch.setattr(streaming_orchestrator, "open_or_create_repo", lambda path: repo)
     monkeypatch.setattr(
-        streaming_orchestrator, "read_committed_period_ids", lambda path, period_type, time_dim="t": set()
+        streaming_orchestrator, "read_committed_period_ids", lambda path, period_type, time_dim="t", **_: set()
     )
-    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path: not path.exists())
+    monkeypatch.setattr(streaming_orchestrator, "is_store_empty", lambda path, **_: not path.exists())
 
     with pytest.raises(RuntimeError, match="has spatial shape"):
         run_streaming_ingest_sync(

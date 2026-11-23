@@ -288,7 +288,7 @@ def test_a_rebuilt_store_renames_any_time_axis_alias(tmp_path: Path) -> None:
     ds.to_zarr(session.store, mode="w", zarr_format=3)
     session.commit("aliased")
 
-    result = services._maybe_build_pyramid(store_path, {"id": "aliased"}, retain_previous=False)
+    result = services._maybe_build_pyramid(store_path, {"id": "aliased"})
 
     assert result.completed
     assert "t" in _store_at(store_path).dims and "date" not in _store_at(store_path).dims

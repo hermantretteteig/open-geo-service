@@ -675,7 +675,7 @@ Implemented behavior:
 - preserve stable managed dataset identity
 - use template-level `sync_execution`
 - `append` execution reuses the sync planner's source-available delta and writes only periods missing from the committed store
-- `rematerialize` execution downloads the complete planned contiguous union into a sibling store and publishes it only after validation
+- `rematerialize` execution downloads the complete planned contiguous union onto a temporary branch of the store and moves `main` to it only after validation
 - return the updated dataset view plus structured `sync_detail`
 - validate realized temporal coverage against the planned contiguous artifact scope; retain the caller's request scope separately as provenance
 
@@ -836,38 +836,39 @@ Expected planning response:
 - `delta_end` is `2024-02-10`
 
 `append` here means Open Geo Service reuses the planner's source-available delta and
-writes only missing periods to the existing Icechunk store. A rollback snapshot protects
-the previously committed store until normalization and artifact registration succeed.
+writes only missing periods to the existing Icechunk store. A rollback branch keeps the
+version before the append until normalization and artifact registration succeed, and a
+failure after that point resets `main` to it.
 Progress counts the new periods in this append, excluding already committed history.
 
 If a complete store has lost its artifact record, repeating `/ingest` reconstructs the
 record from the store without querying or fetching historical source data. Recovery
 validates and normalizes the store and honors the request's publication setting.
 
-Interrupted directory rollback can leave a rejected replacement at `<store>.failed`.
-The next ingest restores a missing target from `<store>.retired` and removes the
-rejected copy once the target exists. If rollback itself fails, the job reports that
-failure and preserves the recovery branch and snapshot; inspect the reported store
-paths before retrying. Snapshot reset is skipped if the original repository could
-not be restored.
+A rematerialization, and an overwrite, is built on a temporary branch of the same Icechunk
+repository. Readers keep the current version on `main` until the new one is fetched,
+validated and normalized, and `main` then moves to it in one step. A pyramid rebuild is one
+commit on the branch it rebuilds. Readers therefore always open a complete version, also
+when an ingest is killed part way: a killed ingest leaves only its temporary branches, which
+the next ingest of that store removes. If rollback itself fails, the job reports that failure
+and names the rollback branch, which still points at the version before the ingest.
 
-A rolled-back append leaves the periods it committed unreachable, and Icechunk keeps them
-until collected. Only data that no branch or tag reaches is removed, so every version still
-reachable is kept, including the one published before the failed attempt.
+A rolled-back append leaves the periods it committed unreachable, and a replaced version is
+unreachable once `main` has moved past it; Icechunk keeps both until collected. Only data that
+no branch or tag reaches is removed, so every version still reachable is kept, including the
+one published before a failed attempt.
 
 Data committed in the last hour is kept as well. Readers take no lock, so a client that opened
-the dataset during the failed attempt may be reading one of its interim versions; the hour lets
-it finish. It is a window, not a guarantee: a client still reading such an interim version more
+the dataset before an update, or during a failed attempt, may be reading a version that is no
+longer on `main`; the hour lets it finish. It is a window, not a guarantee: a client still reading such an interim version more
 than an hour after it was committed can fail with "object not found", and has to reopen the
 dataset. Clients that opened the dataset before the attempt, or after the rollback, are not
 affected.
 
-Collection runs right after the rollback, and when the next ingest finds a rollback branch left
-by a killed one. What the hour kept is marked in `<store>.gc-pending` and collected once the
-hour has passed: at the next ingest of that store, at startup, and every 15 minutes on a
-writable instance. A pyramid rebuild killed part way leaves a partial copy at
-`<store>.rebuild`, which is removed at startup (on a writable instance) and by the next ingest
-of that store.
+Collection runs right after a rollback or a replacement, and when the next ingest finds the
+branches of a killed one. What the hour kept is marked in `<store>.gc-pending` and collected once
+the hour has passed: at the next ingest of that store, at startup, and every 15 minutes on a
+writable instance.
 
 Where these timestamps come from:
 

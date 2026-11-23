@@ -1781,7 +1781,6 @@ def test_maybe_build_pyramid_calls_write_to_icechunk_store(tmp_path: Path, monke
 
     def fake_write(ds_arg: xr.Dataset, path: Path, *a: object, **kw: object) -> None:
         written.append((ds_arg, path))
-        path.mkdir(parents=True, exist_ok=True)  # a real write leaves a store behind
 
     monkeypatch.setattr(downloader, "write_to_icechunk_store", fake_write)
 
@@ -1789,15 +1788,12 @@ def test_maybe_build_pyramid_calls_write_to_icechunk_store(tmp_path: Path, monke
 
     assert len(written) == 1
     # One period per dask chunk, so topozarr keeps one period per time shard (CLIM-1765).
-    assert opened == [{"merge_time": False}]
-    # The rewrite cannot target the store it is reading from, so it goes to a sibling and is
-    # swapped in. What matters to callers is where it ends up, and that nothing is left over.
-    assert written[0][1] == icechunk_path.with_name(f"{icechunk_path.name}.rebuild")
-    assert icechunk_path.is_dir()
-    assert not written[0][1].exists()
-    assert not icechunk_path.with_name(f"{icechunk_path.name}.retired").exists()
+    assert opened == [{"merge_time": False, "branch": "main"}]
+    # One commit on the branch it read, in the same store: no copy beside it.
+    assert written[0][1] == icechunk_path
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["dataset.icechunk"]
     assert result.completed is True
-    assert result.swapped is True
+    assert result.rewritten is True
 
 
 def test_maybe_build_pyramid_skips_rewrite_for_normalized_flat_store(
@@ -1836,7 +1832,7 @@ def test_maybe_build_pyramid_skips_rewrite_for_normalized_flat_store(
 
     assert written == []  # already GeoZarr-normalized and flat → no rewrite
     assert result.completed is True
-    assert result.swapped is False
+    assert result.rewritten is False
 
 
 def test_maybe_build_pyramid_falls_back_on_build_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1863,7 +1859,7 @@ def test_maybe_build_pyramid_falls_back_on_build_error(tmp_path: Path, monkeypat
     result = _maybe_build_pyramid(icechunk_path, {"id": "ds1", "variable": "v"})
 
     assert result.completed is False
-    assert result.swapped is False
+    assert result.rewritten is False
 
 
 def test_plan_sync_append_for_icechunk_artifact(
@@ -1895,255 +1891,20 @@ def test_plan_sync_append_for_icechunk_artifact(
     assert result.action == SyncAction.APPEND
 
 
-def test_swap_store_replaces_the_target_and_cleans_up(tmp_path: Path) -> None:
-    from open_geo_service.ingestions.services import _swap_store
-
-    target = tmp_path / "ds.icechunk"
-    target.mkdir()
-    (target / "old.txt").write_text("old", encoding="utf-8")
-    staging = tmp_path / "ds.icechunk.rebuild"
-    staging.mkdir()
-    (staging / "new.txt").write_text("new", encoding="utf-8")
-
-    _swap_store(staging, target)
-
-    assert (target / "new.txt").read_text(encoding="utf-8") == "new"
-    assert not (target / "old.txt").exists()
-    assert not staging.exists()
-    assert not (tmp_path / "ds.icechunk.retired").exists()
-
-
-def test_swap_store_puts_the_original_back_when_the_swap_fails(tmp_path: Path) -> None:
-    """A failed swap must not leave the dataset without a store."""
-    from open_geo_service.ingestions.services import _swap_store
-
-    target = tmp_path / "ds.icechunk"
-    target.mkdir()
-    (target / "old.txt").write_text("old", encoding="utf-8")
-    missing_staging = tmp_path / "ds.icechunk.rebuild"  # never created -> rename raises
-
-    with pytest.raises(OSError):
-        _swap_store(missing_staging, target)
-
-    # The original survived, contents intact.
-    assert (target / "old.txt").read_text(encoding="utf-8") == "old"
-
-
-def test_recover_interrupted_swap_restores_a_store_killed_between_renames(tmp_path: Path) -> None:
-    """A SIGKILL between the two renames leaves the published path missing and the data at
-    `.retired`, which no reader looks for. The exception handler cannot cover that case.
-    """
-    from open_geo_service.ingestions.services import recover_interrupted_swap
-
-    target = tmp_path / "ds.icechunk"
-    retired = tmp_path / "ds.icechunk.retired"
-    retired.mkdir()
-    (retired / "data").write_text("published", encoding="utf-8")
-    assert not target.exists()  # the state a killed swap leaves behind
-
-    assert recover_interrupted_swap(target) is True
-    assert (target / "data").read_text(encoding="utf-8") == "published"
-    assert not retired.exists()
-
-
-def test_recover_interrupted_swap_leaves_a_healthy_store_alone(tmp_path: Path) -> None:
-    """A `.retired` directory alongside a live store is leftover space, not a pending recovery.
-
-    Restoring over a healthy store would roll back a completed swap.
-    """
-    from open_geo_service.ingestions.services import recover_interrupted_swap
-
-    target = tmp_path / "ds.icechunk"
-    target.mkdir()
-    (target / "data").write_text("current", encoding="utf-8")
-    retired = tmp_path / "ds.icechunk.retired"
-    retired.mkdir()
-    (retired / "data").write_text("stale", encoding="utf-8")
-
-    assert recover_interrupted_swap(target) is False
-    assert (target / "data").read_text(encoding="utf-8") == "current"
-
-
-def test_recover_interrupted_swap_is_a_no_op_for_a_brand_new_dataset(tmp_path: Path) -> None:
-    from open_geo_service.ingestions.services import recover_interrupted_swap
-
-    assert recover_interrupted_swap(tmp_path / "never-existed.icechunk") is False
-
-
-def test_recover_interrupted_swap_removes_stale_ingest_rollback_branches(tmp_path: Path) -> None:
-    from open_geo_service.ingestions.services import recover_interrupted_swap
+def test_cleanup_removes_the_branches_a_killed_ingest_left(tmp_path: Path) -> None:
+    from open_geo_service.ingestions.services import clean_up_interrupted_ingest
     from open_geo_service.streaming.store import open_or_create_repo
 
     target = tmp_path / "ds.icechunk"
     repo = open_or_create_repo(target)
     snapshot = repo.lookup_branch("main")
     repo.create_branch("ogs-ingest-rollback-first", snapshot)
-    repo.create_branch("ogs-ingest-rollback-second", snapshot)
+    repo.create_branch("ogs-ingest-replacement-second", snapshot)
+    repo.create_branch("kept", snapshot)
 
-    assert recover_interrupted_swap(target) is True
-    assert repo.list_branches() == {"main"}
-
-
-def test_an_interrupted_swap_is_healed_before_ingest_reads_the_store(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Recovery has to happen before anything inspects the store, not after ingest.
-
-    A swap killed between its two renames leaves the published path missing and the whole
-    history at `.retired`. If recovery runs after the ingest — as it did when it lived only in
-    `_maybe_build_pyramid` — the sequence is:
-
-    1. ingest sees no store, treats it as new, and writes *only* the requested delta;
-    2. recovery then finds the target present and does nothing;
-    3. the entire history stays stranded in `.retired`, unreferenced.
-
-    Nothing errors, and the dataset silently loses everything before the interruption. So this
-    asserts on what the ingest *sees*: the store must already be there, carrying its history.
-    """
-    from types import SimpleNamespace
-
-    from open_geo_service.data_manager.services import downloader
-    from open_geo_service.ingestions import services as ingestion_services
-    from open_geo_service.ingestions.schemas import ArtifactRequestScope
-
-    target = tmp_path / "ds.icechunk"
-    retired = tmp_path / "ds.icechunk.retired"
-    # The state a killed swap leaves: no published store, the history under `.retired`.
-    retired.mkdir()
-    (retired / "history").write_text("2026-01-01,2026-01-02", encoding="utf-8")
-
-    seen: dict[str, object] = {}
-
-    class FakePlugin:
-        async def periods(self, start: str, end: str) -> list[str]:
-            assert (start, end) == ("2026-01-01", "2026-01-03")
-            return ["2026-01-01", "2026-01-02", "2026-01-03"]
-
-    def fake_ingest(**kwargs: object) -> object:
-        store_path = kwargs["store_path"]
-        assert isinstance(store_path, Path)
-        seen["store_existed"] = store_path.exists()
-        history = store_path / "history"
-        seen["history"] = history.read_text(encoding="utf-8") if history.exists() else None
-        # Append the new period the way a real sync would, onto whatever is there.
-        if history.exists():
-            history.write_text(history.read_text(encoding="utf-8") + ",2026-01-03", encoding="utf-8")
-        else:
-            store_path.mkdir(parents=True, exist_ok=True)
-            history.write_text("2026-01-03", encoding="utf-8")
-        return SimpleNamespace(periods_written=1)
-
-    monkeypatch.setattr(downloader, "get_icechunk_path", lambda _dataset: target)
-    monkeypatch.setattr(ingestion_services, "run_streaming_ingest_sync", fake_ingest)
-    monkeypatch.setattr(ingestion_services, "_load_streaming_plugin", lambda *a, **k: FakePlugin())
-    monkeypatch.setattr(
-        ingestion_services,
-        "_maybe_build_pyramid",
-        lambda *a, **k: ingestion_services._StoreNormalizationResult(completed=True),
-    )
-    monkeypatch.setattr(
-        ingestion_services,
-        "get_data_coverage_for_paths",
-        lambda *a, **k: {
-            "has_data": True,
-            "forecast_reference": None,
-            "coverage": {
-                "temporal": {"start": "2026-01-01", "end": "2026-01-03"},
-                "spatial": {"xmin": 0.0, "ymin": 0.0, "xmax": 1.0, "ymax": 1.0},
-                "spatial_wgs84": None,
-            },
-        },
-    )
-    monkeypatch.setattr(ingestion_services, "_upsert_artifact_record", lambda record, **k: record)
-
-    ingestion_services._create_streaming_artifact(
-        dataset={
-            "id": "ds1",
-            "name": "DS1",
-            "variable": "precip",
-            "period_type": "daily",
-            "ingestion": {"plugin": "example.Plugin"},
-        },
-        plugin_path="example.Plugin",
-        start="2026-01-01",
-        end="2026-01-03",
-        bbox=[0.0, 0.0, 1.0, 1.0],
-        country_code=None,
-        overwrite=False,
-        publish=False,
-        request_scope=ArtifactRequestScope(start="2026-01-01", end="2026-01-03", bbox=(0.0, 0.0, 1.0, 1.0)),
-    )
-
-    # The point of the test: the ingest ran against the recovered store, not a bare path.
-    assert seen["store_existed"] is True
-    assert seen["history"] == "2026-01-01,2026-01-02"
-    # And the delta landed on top of the history rather than replacing it.
-    assert (target / "history").read_text(encoding="utf-8") == "2026-01-01,2026-01-02,2026-01-03"
-    assert not retired.exists()
-
-
-@pytest.mark.parametrize("restored", [False, True])
-def test_recover_interrupted_rollback_removes_rejected_store(tmp_path: Path, restored: bool) -> None:
-    from open_geo_service.ingestions.services import recover_interrupted_swap
-
-    target = tmp_path / "ds.icechunk"
-    retired = tmp_path / "ds.icechunk.retired"
-    failed = tmp_path / "ds.icechunk.failed"
-    original = target if restored else retired
-    original.mkdir()
-    (original / "data").write_text("original", encoding="utf-8")
-    failed.mkdir()
-    (failed / "data").write_text("rejected", encoding="utf-8")
-
-    assert recover_interrupted_swap(target) is True
-    assert (target / "data").read_text(encoding="utf-8") == "original"
-    assert not retired.exists()
-    assert not failed.exists()
-    assert recover_interrupted_swap(target) is False
-
-
-def test_interrupted_rollback_preserves_copies_if_restore_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from open_geo_service.ingestions.services import recover_interrupted_swap
-
-    target = tmp_path / "ds.icechunk"
-    retired = tmp_path / "ds.icechunk.retired"
-    failed = tmp_path / "ds.icechunk.failed"
-    retired.mkdir()
-    failed.mkdir()
-
-    def fail_rename(self: Path, destination: Path) -> Path:
-        raise OSError("rename failed")
-
-    monkeypatch.setattr(Path, "rename", fail_rename)
-    with pytest.raises(OSError, match="rename failed"):
-        recover_interrupted_swap(target)
-    assert retired.exists()
-    assert failed.exists()
-    assert not target.exists()
-
-
-def test_rollback_refuses_to_claim_success_without_retained_store(tmp_path: Path) -> None:
-    from open_geo_service.ingestions.services import _rollback_store_swap
-
-    target = tmp_path / "ds.icechunk"
-    target.mkdir()
-    with pytest.raises(FileNotFoundError, match="retained store .* is missing"):
-        _rollback_store_swap(target)
-    assert target.exists()
-
-
-def test_recovery_does_not_publish_a_rejected_store_without_original(tmp_path: Path) -> None:
-    from open_geo_service.ingestions.services import recover_interrupted_swap
-
-    target = tmp_path / "ds.icechunk"
-    failed = tmp_path / "ds.icechunk.failed"
-    failed.mkdir()
-    with pytest.raises(RuntimeError, match="only the rejected .failed store remains"):
-        recover_interrupted_swap(target)
-    assert failed.exists()
-    assert not target.exists()
+    assert clean_up_interrupted_ingest(target) is True
+    assert repo.list_branches() == {"main", "kept"}
+    assert clean_up_interrupted_ingest(tmp_path / "new.icechunk") is False
 
 
 def _commit_days(repo: Any, days: range, message: str) -> None:
@@ -2261,15 +2022,15 @@ def test_collection_keeps_what_a_branch_still_reaches(tmp_path: Path, collect_im
     assert _chunk_files(target) == files
 
 
-def test_recovery_collects_what_a_killed_ingest_left_unreachable(tmp_path: Path, collect_immediately: None) -> None:
-    """A killed ingest leaves its rollback branch; recovery removes it and collects what it pinned."""
-    from open_geo_service.ingestions.services import recover_interrupted_swap
+def test_cleanup_collects_what_a_killed_ingest_left_unreachable(tmp_path: Path, collect_immediately: None) -> None:
+    """A killed ingest leaves its rollback branch; cleanup removes it and collects what it pinned."""
+    from open_geo_service.ingestions.services import clean_up_interrupted_ingest
 
     target = tmp_path / "ds.icechunk"
     repo = _rolled_back_store(target)
     before = _chunk_files(target)
 
-    assert recover_interrupted_swap(target) is True
+    assert clean_up_interrupted_ingest(target) is True
     assert repo.list_branches() == {"main"}
     assert _chunk_files(target) == before - 10
 
@@ -2323,7 +2084,7 @@ def test_the_next_ingest_runs_a_pending_collection(tmp_path: Path, short_retenti
     services._mark_collection_pending(target)
     time.sleep(short_retention)
 
-    services.recover_interrupted_swap(target)  # first thing every ingest does, under the lock
+    services.clean_up_interrupted_ingest(target)  # first thing every ingest does, under the lock
 
     assert _chunk_files(target) == before - 10
     assert not (tmp_path / "ds.icechunk.gc-pending").exists()
@@ -2346,56 +2107,3 @@ def test_the_sweep_skips_a_store_an_ingest_holds(tmp_path: Path, short_retention
     finally:
         lock.release()
     assert (tmp_path / "ds.icechunk.gc-pending").exists(), "left for the next sweep"
-
-
-def test_recovery_removes_a_leftover_pyramid_rebuild(tmp_path: Path) -> None:
-    from open_geo_service.ingestions.services import recover_interrupted_swap
-    from open_geo_service.streaming.store import open_or_create_repo
-
-    target = tmp_path / "ds.icechunk"
-    open_or_create_repo(target)
-    leftover = tmp_path / "ds.icechunk.rebuild"
-    (leftover / "chunks").mkdir(parents=True)
-    (leftover / "chunks" / "partial").write_bytes(b"x" * 1024)
-
-    assert recover_interrupted_swap(target) is True
-    assert not leftover.exists()
-    assert target.exists()
-
-
-def test_startup_sweep_removes_every_leftover_rebuild(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from open_geo_service.data_manager.services import downloader
-    from open_geo_service.ingestions.services import remove_leftover_rebuilds
-
-    monkeypatch.setattr(downloader, "DOWNLOAD_DIR", tmp_path)
-    for name in ("a", "b"):
-        (tmp_path / f"{name}.icechunk").mkdir()
-        (tmp_path / f"{name}.icechunk.rebuild").mkdir()
-    (tmp_path / "keep.icechunk").mkdir()
-
-    assert remove_leftover_rebuilds() == 2
-    assert sorted(p.name for p in tmp_path.glob("*.icechunk")) == ["a.icechunk", "b.icechunk", "keep.icechunk"]
-    assert list(tmp_path.glob("*.icechunk.rebuild")) == []
-
-
-def test_startup_sweep_skips_rebuild_for_store_another_writer_holds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from open_geo_service.data_manager.services import downloader
-    from open_geo_service.ingestions import services
-
-    monkeypatch.setattr(downloader, "DOWNLOAD_DIR", tmp_path)
-    target = tmp_path / "active.icechunk"
-    target.mkdir()
-    leftover = tmp_path / "active.icechunk.rebuild"
-    leftover.mkdir()
-    lock = services._acquire_store_lock(target)
-    assert lock.acquire(blocking=False)
-    try:
-        assert services.remove_leftover_rebuilds() == 0
-        assert leftover.exists()
-    finally:
-        lock.release()
-
-    assert services.remove_leftover_rebuilds() == 1
-    assert not leftover.exists()

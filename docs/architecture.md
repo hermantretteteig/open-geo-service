@@ -314,7 +314,7 @@ When a new ingestion request arrives, the framework plans against the periods al
 - same bbox (from the configured extent)
 - the contiguous union of committed and requested source-valid periods
 
-If the union extends forward, only missing periods are appended. A non-adjacent request also fetches the intervening source-valid periods. If the union starts before existing coverage, or the committed coordinate is gapped or out of order, the framework rematerializes the union in a sibling store and publishes it only after successful validation and normalization. `request_scope` records what the caller asked for; artifact `coverage` records the cumulative realized store.
+If the union extends forward, only missing periods are appended. A non-adjacent request also fetches the intervening source-valid periods. If the union starts before existing coverage, or the committed coordinate is gapped or out of order, the framework rematerializes the union on a temporary branch of the same Icechunk repository and moves `main` to it only after successful validation and normalization, so readers never see a partial store. `request_scope` records what the caller asked for; artifact `coverage` records the cumulative realized store.
 
 The artifact store keeps the full history of records for sync deduplication and provenance. Old artifacts are not deleted automatically. For long-running instances, `records.json` grows over time. The long-term direction is a proper transactional store, but for the current scale (tens of artifacts per instance) a JSON file is adequate.
 
