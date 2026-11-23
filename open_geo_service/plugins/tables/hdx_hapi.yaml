@@ -25,33 +25,3 @@
       filters: {ipc_type: current}
       columns: {class: ipc_phase, value: population_in_phase}
       constants: {unit: people}
-
-- id: hdx_hapi_food_prices
-  name: Market food prices (WFP, HDX HAPI)
-  description: >-
-    Monthly retail and wholesale prices of food and other commodities in markets, from the World
-    Food Programme's market monitoring, through HDX HAPI. Each market is reported on the admin 2
-    area it lies in; a month is the one its reference period starts in.
-  source: World Food Programme (WFP), via HDX HAPI
-  source_url: https://data.humdata.org/dataset/global-wfp-food-prices
-  license: CC-BY-3.0-IGO
-  providers:
-    - {name: World Food Programme, url: https://www.wfp.org, roles: [producer]}
-    - {name: OCHA Centre for Humanitarian Data, url: https://data.humdata.org, roles: [processor]}
-  period_type: monthly
-  schema: market_prices
-  collection: hdx_cod_ab_admin2
-  ingestion:
-    plugin: open_geo_service.plugins.tables.hdx_hapi.HapiTablePlugin
-    params:
-      endpoint: food-security-nutrition-poverty/food-prices-market-monitor
-      columns:
-        market: market_name
-        latitude: lat
-        longitude: lon
-        commodity: commodity_name
-        commodity_category: commodity_category
-        price_type: price_type
-        measure: unit
-        price: price
-        currency: currency_code

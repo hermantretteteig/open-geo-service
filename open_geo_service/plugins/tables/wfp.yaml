@@ -1,0 +1,19 @@
+# Monthly food prices per market in this instance's country, from the dataset the World Food
+# Programme publishes on the Humanitarian Data Exchange. Fetch `wfp_markets` first: the prices
+# report on its markets.
+- id: wfp_food_prices
+  name: Market food prices (WFP)
+  description: >-
+    Monthly retail and wholesale prices of food and other commodities in markets, from the World
+    Food Programme's market monitoring, in the local currency and in US dollars. A month is dated
+    by its first day; WFP dates it by the 15th.
+  source: World Food Programme (WFP)
+  source_url: https://data.humdata.org/organization/wfp
+  license: CC-BY-3.0-IGO
+  providers:
+    - {name: World Food Programme, url: https://www.wfp.org, roles: [producer, licensor]}
+  period_type: monthly
+  schema: market_prices
+  collection: wfp_markets
+  ingestion:
+    plugin: open_geo_service.plugins.tables.wfp.WfpPricesPlugin

@@ -969,6 +969,62 @@ def test_hdx_cod_ab_boundaries_are_one_level_of_the_countrys_edge_matched_downlo
     assert (collection["feature_count"], collection["version"]["value"]) == (2, "v02")
 
 
+def test_wfp_prices_and_ipc_phases_report_on_the_publishers_own_features_for_the_extents_country(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    import httpx
+
+    files = {
+        "wfp_markets_sle.csv": "market_id,market,countryiso3,admin1,admin2,latitude,longitude\n"
+        "341,Bo,SLE,Southern,Bonthe,7.54,-12.26\n1772,Freetown,SLE,Western,Western Area Urban,8.48,-13.23\n",
+        "wfp_food_prices_sle.csv": "date,market_id,market,category,commodity,unit,pricetype,currency,price,usdprice\n"
+        "2026-05-15,341,Bo,cereals and tubers,Rice (local),KG,Retail,SLL,18520,0.77\n"
+        "2026-06-15,1772,Freetown,cereals and tubers,Rice (local),KG,Retail,SLL,24000,0.99\n",
+        "ipc_sle.geojson": json.dumps(
+            {"type": "FeatureCollection", "features": [{**_box("x", -12, 7), "properties": {"title": "Kono"}}]}
+        ),
+        "ipc_sle_area_long.csv": "Area,Validity period,From,To,Phase,Number\n"
+        "Kono,current,2025-10-01,2025-12-31,3+,76554\nKono,first projection,2026-06-01,2026-08-31,3+,80000\n",
+    }
+    searches: list[str] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if "package_search" in str(request.url):
+            searches.append(request.url.params["fq"])
+            resources = [{"url": f"https://hdx.example/download/{name}"} for name in files]
+            return httpx.Response(200, json={"result": {"results": [{"resources": resources}]}})
+        return httpx.Response(200, content=files[str(request.url).rsplit("/", 1)[-1]].encode())
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx, "get", lambda url, **kw: real_client(transport=httpx.MockTransport(answer)).get(url, **kw)
+    )
+    assert client.post("/features/wfp_markets/refresh", json={}).status_code == 200
+    assert client.post("/ingestions", json={"dataset_id": "wfp_food_prices"}).status_code == 200
+    assert client.post("/features/ipc_areas/refresh", json={}).status_code == 200
+    assert client.post("/ingestions", json={"dataset_id": "ipc_food_security"}).status_code == 200
+
+    assert "organization:wfp AND groups:sle" in searches[0]
+    phases = client.get("/tables/ipc_food_security/rows").json()["items"]
+    assert [(r["feature_id"], r["period"], r["class"], r["value"]) for r in phases] == [
+        ("Kono", "2025-10", "3+", 76554.0)
+    ]
+    rows = client.get("/tables/wfp_food_prices/rows").json()["items"]
+    assert [
+        (r["feature_id"], r["period"], r["commodity"], r["price"], r["currency"], r["usd_price"]) for r in rows
+    ] == [
+        ("1772", "2026-06", "Rice (local)", 24000.0, "SLL", 0.99),
+        ("341", "2026-05", "Rice (local)", 18520.0, "SLL", 0.77),
+    ]
+    columns = client.get("/stac/wfp_food_prices/collection.json").json()["table:columns"]
+    assert {c["name"]: c.get("unit") for c in columns if c["name"] in ("price", "usd_price")} == {
+        "price": "SLL",
+        "usd_price": "USD",
+    }
+
+
 def test_a_table_template_in_an_installed_plugin_package_is_discovered(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -1,0 +1,21 @@
+# Acute food insecurity per IPC analysis area in this instance's country, from the dataset IPC
+# publishes on the Humanitarian Data Exchange. Fetch `ipc_areas` first: the rows report on them.
+- id: ipc_food_security
+  name: Food insecurity by area (IPC)
+  description: >-
+    People in each phase of acute food insecurity per area, from the current IPC or Cadre
+    Harmonisé analyses. A row is dated by the first month of its analysis period, usually March to
+    May or October to December; `class` is the phase, 1 to 5, `3+` (phases 3 to 5) or `all` (the
+    population analysed).
+  source: Integrated Food Security Phase Classification (IPC)
+  source_url: https://data.humdata.org/organization/ipc
+  license:
+    name: Public Domain / No restrictions
+  providers:
+    - {name: Integrated Food Security Phase Classification (IPC), url: https://www.ipcinfo.org, roles: [producer]}
+  period_type: monthly
+  collection: ipc_areas
+  ingestion:
+    plugin: open_geo_service.plugins.tables.ipc.IpcAreasPlugin
+    params:
+      constants: {unit: people}

@@ -752,7 +752,7 @@ last, period the source has. Rows are checked against the schema and written onc
 so a refused row leaves the table as it was. `POST /sync/{dataset_id}` fetches the periods after
 the table's last one; a table a pipeline computes has no template and refuses sync with 409.
 
-Two plugins are built in, and both read columns the same way: each schema column from the
+The built-in plugins read columns the same way: each schema column from the
 source field of the same name, or of the name `columns` maps it to, while `constants` gives a
 column one value for every row (`period_start: 2020` gives a source without a period field its
 year). Values are read as their column's type, an empty one is missing, and a period may be a
@@ -770,8 +770,13 @@ date or a period id (`2026-01`, `2026-W01`, `2026`).
   period with `filters`. Rows HAPI could not match to a current p-code, with a code ending in
   `-XXX`, are skipped and named in the log. Set `HDX_HAPI_APP_IDENTIFIER` in `.env`, an
   application name and contact email encoded by HAPI's `encode_app_identifier`. Food insecurity
-  and market food prices ship as templates; see
-  [Built-in datasets](built_in_datasets.md#hdx-hapi--food-insecurity-and-market-food-prices-tables).
+  ships as a template; see [Built-in datasets](built_in_datasets.md#hdx-hapi--food-insecurity-table).
+- `open_geo_service.plugins.tables.ipc.IpcAreasPlugin` reads the analyses IPC publishes for the
+  extent's country, shipped as `ipc_food_security`; see
+  [Built-in datasets](built_in_datasets.md#ipc--acute-food-insecurity-feature-collection-and-table).
+- `open_geo_service.plugins.tables.wfp.WfpPricesPlugin` reads the market prices WFP publishes for
+  the extent's country, shipped as `wfp_food_prices`; see
+  [Built-in datasets](built_in_datasets.md#wfp--market-food-prices-feature-collection-and-table).
 
 ```yaml
 - id: rainfall_hapi

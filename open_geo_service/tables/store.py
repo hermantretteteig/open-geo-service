@@ -75,14 +75,16 @@ def schema_of(record: ArtifactRecord | None) -> TableSchema:
 def unit_of(record: ArtifactRecord, column: str) -> str | None:
     """A column's unit, as the STAC metadata, README and page show it.
 
-    For a value column in a schema with a unit column, the one its rows were written in; else the
-    one the schema declares.
+    The one the schema declares for the column; else, for a value column in a schema with a unit
+    column, the one its rows were written in.
     """
     declared = schema_of(record)
+    described = declared.column(column)
+    if described is not None and described.unit:
+        return described.unit
     if column in declared.values and declared.represented_by("unit"):
         return record.units
-    described = declared.column(column)
-    return described.unit if described is not None else None
+    return None
 
 
 def _dataset_lock(dataset_id: str) -> AbstractContextManager[None]:

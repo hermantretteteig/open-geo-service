@@ -1,0 +1,14 @@
+# The markets where the World Food Programme monitors food prices in this instance's country
+# (`extent.country_code`), from the dataset WFP publishes on the Humanitarian Data Exchange. The
+# WFP food price table (plugins/tables/wfp.yaml) reports on them by WFP's market id.
+- id: wfp_markets
+  name: Markets (WFP)
+  description: >-
+    The markets where the World Food Programme monitors food prices in this instance's country,
+    as points, with WFP's market id and the admin area names WFP gives them.
+  license: CC-BY-3.0-IGO
+  providers:
+    - {name: World Food Programme, url: https://www.wfp.org, roles: [producer, licensor]}
+  source_url: https://data.humdata.org/organization/wfp
+  id_property: market_id
+  provider: wfp_markets

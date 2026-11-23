@@ -273,32 +273,64 @@ and keeps the edge-matched layer of one admin level, aligned to the internationa
 republished about 114 countries' boundaries in this layout; a country it has not yet, such as
 Rwanda, is refused with a message saying so.
 
-## HDX HAPI — food insecurity and market food prices (tables)
+## HDX HAPI — food insecurity (table)
 
 | Property           | Value                                                                                       |
 | ------------------ | ------------------------------------------------------------------------------------------- |
-| **Table IDs**      | `hdx_hapi_food_security`, `hdx_hapi_food_prices`                                            |
+| **Table ID**       | `hdx_hapi_food_security`                                                                    |
 | **Item type**      | Table (Parquet), per admin 2 area of `hdx_cod_ab_admin2` and month                         |
 | **Coverage**       | This instance's country, where [HDX HAPI](https://hapi.humdata.org/docs) has it             |
-| **Licence**        | Food insecurity: public domain (IPC). Food prices: CC-BY-3.0-IGO (WFP)                      |
-| **Source**         | [IPC country data](https://data.humdata.org/dataset/global-acute-food-insecurity-country-data), [WFP food prices](https://data.humdata.org/dataset/global-wfp-food-prices) |
+| **Licence**        | Public domain (IPC)                                                                         |
+| **Source**         | [IPC country data](https://data.humdata.org/dataset/global-acute-food-insecurity-country-data) |
+
+People in each phase of acute food insecurity, from the current IPC or Cadre Harmonisé analyses,
+with the phase (1 to 5, `3+`, `all`) in `class`. A row is dated by the first month of its analysis
+period.
 
 **Setup** — encode an application name and a contact email with `encode_app_identifier` at
 https://hapi.humdata.org/docs and set the result as `HDX_HAPI_APP_IDENTIFIER` in `.env`. Fetch
-`hdx_cod_ab_admin2` first: the tables report on it.
-
-- `hdx_hapi_food_security`: people in each phase of acute food insecurity, from the current IPC
-  or Cadre Harmonisé analyses, with the phase (1 to 5, `3+`, `all`) in `class`. A row is dated by
-  the first month of its analysis period.
-- `hdx_hapi_food_prices`: monthly prices of commodities per market, in the `market_prices` schema,
-  with the market, commodity, price type and `measure` (KG, L) in its key and the currency as the
-  table's unit. Prices are in the currency WFP reports, e.g. Sierra Leone's in old leones (`SLL`).
+`hdx_cod_ab_admin2` first: the table reports on it.
 
 HAPI's p-codes follow each source's edition. A row HAPI could not match to a current p-code has a
 code ending in `-XXX` and is skipped, so its area is missing rather than wrong. For Sierra Leone
-that leaves out Kambia and Port Loko, redrawn since the 2020 census, and Kailahun and Karene in
-the food insecurity rows HAPI has matched that way since October 2021.
+that leaves out Kambia and Port Loko, redrawn since the 2020 census, and Kailahun and Karene, which
+HAPI has given that code since October 2021.
 
+## IPC — acute food insecurity (feature collection and table)
+
+| Property           | Value                                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------------- |
+| **IDs**            | `ipc_areas` (polygons), `ipc_food_security` (table)                                         |
+| **Identity**       | The area name, as IPC's tables give it                                                      |
+| **Coverage**       | This instance's country, where IPC or Cadre Harmonisé analyses it                           |
+| **Licence**        | Public domain                                                                               |
+| **Source**         | [IPC's datasets on the Humanitarian Data Exchange](https://data.humdata.org/organization/ipc) |
+
+IPC publishes each country's analyses on HDX itself, as `<country>-acute-food-insecurity-country-data`,
+found by the instance's country code. `ipc_areas` holds the areas of the latest analysis, from its
+GeoJSON; `ipc_food_security` holds people per phase (1 to 5, `3+`, `all`, in `class`) per area for
+every current analysis, dated by the first month of its analysis period. Fetch `ipc_areas` first.
+IPC's tables name an area only by its name, so the name is the id, and a row of an earlier
+analysis for an area since renamed or redrawn is refused.
+
+## WFP — market food prices (feature collection and table)
+
+| Property           | Value                                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------------- |
+| **IDs**            | `wfp_markets` (points), `wfp_food_prices` (table)                                           |
+| **Identity**       | WFP's `market_id`                                                                           |
+| **Coverage**       | This instance's country, where WFP monitors markets                                         |
+| **Licence**        | CC-BY-3.0-IGO — attribution                                                                 |
+| **Source**         | [WFP's datasets on the Humanitarian Data Exchange](https://data.humdata.org/organization/wfp) |
+
+WFP publishes each country's market prices on HDX itself, as `wfp-food-prices-for-<country>`:
+a markets file and a prices file, found by the instance's country code. `wfp_markets` holds the
+markets as points; `wfp_food_prices` holds monthly prices per market, commodity, price type and
+`measure` (KG, L) in the `market_prices` schema, in the local currency (the table's unit) and in
+US dollars (`usd_price`). Fetch `wfp_markets` first. Prices report on markets rather than admin
+areas, so no admin codes are involved; WFP's admin names are kept on the markets but not relied
+on, as they can be wrong (Sierra Leone's Bo market is listed in Bonthe district). Prices are in
+the currency WFP reports, e.g. Sierra Leone's in old leones (`SLL`).
 
 ## DHIS2 — organisation units (feature collection)
 

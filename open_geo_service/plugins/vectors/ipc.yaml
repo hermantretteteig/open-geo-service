@@ -1,0 +1,15 @@
+# The areas of the latest IPC analysis of this instance's country (`extent.country_code`), from
+# the dataset IPC publishes on the Humanitarian Data Exchange. The IPC food insecurity table
+# (plugins/tables/ipc.yaml) reports on them by area name.
+- id: ipc_areas
+  name: Analysis areas (IPC)
+  description: >-
+    The areas of the latest Integrated Food Security Phase Classification analysis of this
+    instance's country, identified by name, as IPC's tables name them.
+  license:
+    name: Public Domain / No restrictions
+  providers:
+    - {name: Integrated Food Security Phase Classification (IPC), url: https://www.ipcinfo.org, roles: [producer]}
+  source_url: https://data.humdata.org/organization/ipc
+  id_property: area
+  provider: ipc_areas
