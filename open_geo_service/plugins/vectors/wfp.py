@@ -15,7 +15,7 @@ import io
 from typing import Any
 
 from open_geo_service.features.providers import feature_provider
-from open_geo_service.plugins.vectors.hdx import country_files, download
+from open_geo_service.shared.hdx import country_files, download
 
 
 def wfp_csv(prefix: str, country: str | None) -> list[dict[str, str]]:

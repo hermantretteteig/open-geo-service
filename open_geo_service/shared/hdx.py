@@ -2,7 +2,7 @@
 
 WFP and IPC publish each country's data on HDX themselves, as one dataset per country whose name
 spells out the country. HDX's package search finds it by the publisher and the country's HDX
-group, its alpha-3 code. Shared by `wfp.py`, `ipc.py` and their table plugins.
+group, its alpha-3 code. Shared by the WFP and IPC feature providers and table plugins.
 """
 
 from __future__ import annotations

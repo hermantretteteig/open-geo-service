@@ -14,14 +14,14 @@ import json
 from typing import Any
 
 from open_geo_service.features.providers import feature_provider
-from open_geo_service.plugins.vectors.hdx import country_files, download
+from open_geo_service.shared.hdx import country_files, download
 
 DATASET = "*-acute-food-insecurity-country-data"
 
 
 def ipc_file(prefix: str, country: str | None) -> str:
     """The text of the file named *prefix* plus the country code, such as `ipc_sle.geojson`."""
-    from open_geo_service.plugins.vectors.hdx import iso3
+    from open_geo_service.shared.hdx import iso3
 
     files = country_files("ipc", DATASET, country)
     name = prefix.format(iso3=iso3(country))
