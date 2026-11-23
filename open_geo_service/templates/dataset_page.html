@@ -136,7 +136,9 @@
           <div class="stack">
             <section class="panel" aria-labelledby="sync-title">
               <h3 id="sync-title">{% if vector %}Refresh{% elif dataset.kind == "table" %}Updates{% else %}Sync{% endif %}</h3>
-              {% if dataset.kind == "table" %}
+              {% if table_source_href %}
+              <p class="note">Rows come from <a href="{{ mount }}{{ table_source_href }}">its data source</a>; ingest a range there again, or sync with <code>POST /sync/{{ dataset.id }}</code> to add the periods after the latest. A value fetched again replaces the one before, so the table holds current values only.</p>
+              {% elif dataset.kind == "table" %}
               <p class="note">The pipeline that computes this table writes its rows. A value written again replaces the one before, so the table holds current values only.</p>
               {% elif refresh_href %}
               <p class="note">

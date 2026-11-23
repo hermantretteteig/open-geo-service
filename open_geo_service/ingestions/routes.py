@@ -1,10 +1,11 @@
 """Routes for EO ingestion, datasets, and sync operations."""
 
+from typing import Any
+
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from starlette.responses import Response
 
-from open_geo_service.data_registry.routes import _get_dataset_or_404
 from open_geo_service.extents.services import get_extent_or_404
 from open_geo_service.ingestions import services
 from open_geo_service.ingestions.job_submission import INGESTION_JOB_HREF_BASE, submit_sync_job
@@ -62,6 +63,13 @@ def cancel_ingestion_job(job_id: str) -> JobRecord:
     return _with_ingestion_job_self_link(record)
 
 
+def _ingestable_template_or_404(dataset_id: str) -> dict[str, Any]:
+    template = services.get_ingestable_template(dataset_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail=f"Data source '{dataset_id}' not found")
+    return template
+
+
 @ingestions_router.post("")
 def create_ingestion(
     request: CreateIngestionRequest,
@@ -78,7 +86,7 @@ def create_ingestion(
         # through the job record, so a non-ingestable template would be accepted with 202 and
         # then fail — logging a traceback for what is a client mistake, and hiding the reason
         # from the response that was supposed to carry it (CLIM-912).
-        services.ensure_ingestable(_get_dataset_or_404(request.dataset_id))
+        services.ensure_ingestable(_ingestable_template_or_404(request.dataset_id))
         get_extent_or_404()
 
         from open_geo_service.ingestions.processes import execute_ingestion
@@ -95,7 +103,7 @@ def create_ingestion(
         return IngestionResponse(ingestion_id=job.job_id, status=job.status, dataset=None)
     from open_geo_service.ingestions.processes import ingest_dataset, record_inline_update
 
-    dataset = _get_dataset_or_404(request.dataset_id)
+    dataset = _ingestable_template_or_404(request.dataset_id)
     get_extent_or_404()  # refuse before any work, as the async branch does
     artifact, events = ingest_dataset(
         dataset=dataset,

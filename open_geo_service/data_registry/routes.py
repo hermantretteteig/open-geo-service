@@ -67,7 +67,25 @@ def list_data_sources(request: Request, response: Response) -> list[dict[str, An
         return page
     rasters = [_with_ingestability(dataset) for dataset in datasets.list_datasets()]
     providers = feature_providers.load_feature_providers()
-    return rasters + [_feature_template_view(template, providers) for template in usable_feature_templates()]
+    features = [_feature_template_view(template, providers) for template in usable_feature_templates()]
+    return (
+        rasters
+        + features
+        + [_table_template_view(template) for template in _usable_table_templates(rasters + features)]
+    )
+
+
+def _table_template_view(template: dict[str, Any]) -> dict[str, Any]:
+    """A table template, marked as one; it declares its plugin, so it can be ingested."""
+    return {**template, "itemType": "table", "ingestable": True}
+
+
+def _usable_table_templates(listed: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Table templates whose id no raster or feature template in *listed* has; those keep the id."""
+    from open_geo_service.tables.templates import list_table_templates
+
+    taken = {str(template["id"]) for template in listed}
+    return [template for template in list_table_templates() if str(template["id"]) not in taken]
 
 
 def _get_dataset_or_404(dataset_id: str) -> dict[str, Any]:
@@ -102,7 +120,7 @@ def get_data_source(dataset_id: str, request: Request, response: Response) -> di
 
         feature = feature_templates.get_feature_template(dataset_id)
         if feature is None:
-            raise HTTPException(status_code=404, detail=f"Data source '{dataset_id}' not found")
+            return _table_data_source(dataset_id, request)
         if prefers_html(request):
             page = HTMLResponse(render_feature_source_page(feature, mount_prefix(request)))
             page.headers["Vary"] = "Accept"
@@ -124,3 +142,19 @@ def get_data_source(dataset_id: str, request: Request, response: Response) -> di
     coverage = get_data_coverage(dataset)
     dataset.update(coverage)
     return _with_ingestability(dataset)
+
+
+def _table_data_source(dataset_id: str, request: Request) -> dict[str, Any] | HTMLResponse:
+    """A table data source, as the raster one's page or JSON, with whether it has been ingested."""
+    from open_geo_service.system.templates import prefers_html, render_data_source_page
+    from open_geo_service.tables import store
+    from open_geo_service.tables.templates import get_table_template
+
+    template = get_table_template(dataset_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail=f"Data source '{dataset_id}' not found")
+    if prefers_html(request):
+        page = HTMLResponse(render_data_source_page(template, mount_prefix(request)))
+        page.headers["Vary"] = "Accept"
+        return page
+    return {**_table_template_view(template), "has_data": store.latest_record(dataset_id) is not None}

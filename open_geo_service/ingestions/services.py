@@ -456,6 +456,13 @@ def ensure_ingestable(dataset: dict[str, object]) -> None:
     )
 
 
+def get_ingestable_template(dataset_id: str) -> dict[str, Any] | None:
+    """The raster or table template `POST /ingestions` ingests as *dataset_id*, raster first, or None."""
+    from open_geo_service.tables.templates import get_table_template
+
+    return registry_datasets.get_dataset(dataset_id) or get_table_template(dataset_id)
+
+
 def create_artifact(
     *,
     dataset: dict[str, object],
@@ -491,6 +498,25 @@ def create_artifact(
     # output was first told to supply a start period — advice for a request that could never
     # have succeeded.
     ensure_ingestable(dataset)
+
+    from open_geo_service.tables import templates as table_templates
+
+    if table_templates.is_table_template(dataset):
+        from open_geo_service.tables.ingest import ingest_table
+
+        # A table has no store to plan against or overwrite: rows of a period it holds replace the stored ones.
+        try:
+            return ingest_table(
+                dataset,
+                start=start,
+                end=end,
+                publish=publish,
+                on_progress=on_progress,
+                is_cancel_requested=is_cancel_requested,
+                on_update_planned=on_update_planned,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if registry_datasets.is_timeless(dataset):
         # No time axis, so no periods to resolve, plan or append: the plugin's `fetch` is called
@@ -2064,6 +2090,8 @@ def sync_dataset(
     """
     latest_artifact = get_latest_artifact_for_dataset_or_404(dataset_id)
     _refuse_non_raster_sync(latest_artifact)
+    if latest_artifact.format == ArtifactFormat.PARQUET:
+        return _sync_table(latest_artifact, end=end, publish=publish, on_progress=on_progress)
     source_dataset = registry_datasets.get_dataset(latest_artifact.dataset_id)
     if source_dataset is None:
         raise HTTPException(status_code=404, detail=f"Source dataset '{latest_artifact.dataset_id}' not found")
@@ -2094,6 +2122,13 @@ def plan_sync_dataset(
     """Return the sync plan for a managed dataset without downloading or writing artifacts."""
     latest_artifact = get_latest_artifact_for_dataset_or_404(dataset_id)
     _refuse_non_raster_sync(latest_artifact)
+    if latest_artifact.format == ArtifactFormat.PARQUET:
+        from open_geo_service.tables.ingest import plan_table_sync
+
+        try:
+            return plan_table_sync(_table_template_or_409(latest_artifact), latest_artifact, end)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     source_dataset = registry_datasets.get_dataset(latest_artifact.dataset_id)
     if source_dataset is None:
         raise HTTPException(status_code=404, detail=f"Source dataset '{latest_artifact.dataset_id}' not found")
@@ -2107,6 +2142,47 @@ def plan_sync_dataset(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _table_template_or_409(record: ArtifactRecord) -> dict[str, Any]:
+    """The template a table dataset is synced from; a computed table has none, its pipeline updates it."""
+    from open_geo_service.tables.templates import get_table_template
+
+    template = get_table_template(record.dataset_id)
+    if template is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Table dataset '{record.dataset_id}' has no data source to sync from; "
+                "the pipeline that computes it writes its rows"
+            ),
+        )
+    return template
+
+
+def _sync_table(
+    record: ArtifactRecord,
+    *,
+    end: str | None,
+    publish: bool,
+    on_progress: Callable[[int | None, int | None, str | None], None] | None,
+) -> SyncResponse:
+    """Sync a table dataset from its template: the periods after its last one that the source has."""
+    from open_geo_service.tables.ingest import sync_table
+
+    try:
+        detail, written = sync_table(
+            _table_template_or_409(record), record, end=end, publish=publish, on_progress=on_progress
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return SyncResponse(
+        sync_id=written.artifact_id if written is not None else None,
+        status="completed" if written is not None else "up_to_date",
+        message=detail.message,
+        dataset=get_dataset_or_404(record.dataset_id),
+        sync_detail=detail,
+    )
 
 
 def _refuse_non_raster_sync(artifact: ArtifactRecord) -> None:
@@ -3023,8 +3099,8 @@ def _build_dataset_record(dataset_id: str, artifacts: list[ArtifactRecord]) -> D
     if latest.format == ArtifactFormat.PARQUET:
         from open_geo_service.tables.sources import table_sources
 
-        # A computed table has no template; its metadata comes from the datasets it was computed
-        # from. Tables from external systems get templates of their own with CLIM-1556.
+        # A table from a data source takes its metadata from its template; a computed table, from
+        # the datasets it was computed from.
         sources = table_sources(latest)
         source_dataset = {**sources.template(), "description": sources.description(latest)}
         licence_id, licence_url = sources.license, sources.license_url
@@ -3038,8 +3114,8 @@ def _build_dataset_record(dataset_id: str, artifacts: list[ArtifactRecord]) -> D
     return DatasetRecord(
         dataset_id=dataset_id,
         source_dataset_id=latest.source_dataset_id or latest.dataset_id,
-        # From the template like the fields below, so renaming one needs no re-ingest; a table
-        # has no template yet and keeps the name it was stored with.
+        # From the template like the fields below, so renaming one needs no re-ingest; a computed
+        # table has no template and keeps the name it was stored with.
         dataset_name=_as_optional_str(source_dataset.get("name")) or latest.dataset_name,
         short_name=_as_optional_str(source_dataset.get("short_name")),
         description=_as_optional_text(source_dataset.get("description")),

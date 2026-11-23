@@ -627,8 +627,9 @@ class CreateIngestionRequest(BaseModel):
         description=(
             "Start period to ingest. Required for historical datasets. May be omitted for a "
             "dataset declaring 'temporal_direction: future' (e.g. a forecast), where it means "
-            "'from now' — a fixed date would be stale by the next day — and for a climatology, "
-            "where it means the whole reference period the template declares."
+            "'from now' — a fixed date would be stale by the next day — for a climatology, "
+            "where it means the whole reference period the template declares, and for a table, "
+            "where it means from the first period its source has."
         ),
     )
     end: str | None = Field(

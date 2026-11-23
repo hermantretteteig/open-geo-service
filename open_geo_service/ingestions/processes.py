@@ -8,7 +8,6 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from open_geo_service.data_registry.services import datasets as registry_datasets
 from open_geo_service.extents import services as extent_services
 from open_geo_service.ingestions import services
 from open_geo_service.ingestions.schemas import ArtifactRecord, SyncAction, SyncResponse
@@ -199,7 +198,7 @@ def execute_ingestion(
     load_cursor: Callable[[], dict[str, Any] | None] | None = None,
 ) -> JobExecutionResult:
     """Execute one managed-dataset ingestion as a job, emitting `dataset.updated` on change."""
-    dataset = registry_datasets.get_dataset(dataset_id)
+    dataset = services.get_ingestable_template(dataset_id)
     if dataset is None:
         raise HTTPException(status_code=404, detail=f"Dataset '{dataset_id}' not found")
 

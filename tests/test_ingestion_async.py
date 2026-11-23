@@ -74,7 +74,7 @@ def test_post_ingestion_respond_async_returns_202_with_location(
     mock_service.submit_callable_job.return_value = job
     monkeypatch.setattr("open_geo_service.jobs.service.JobService.submit_callable_job", lambda self, **kw: job)
     monkeypatch.setattr(
-        "open_geo_service.ingestions.routes._get_dataset_or_404",
+        "open_geo_service.ingestions.routes._ingestable_template_or_404",
         # An ingestable template. The ingest path refuses one with no "ingestion.plugin"
         # (CLIM-912), so a bare stub short-circuits before the behaviour under test.
         lambda _: {"id": "chirps3_precipitation_daily", "ingestion": {"plugin": "pkg.mod"}},
@@ -162,7 +162,7 @@ def test_get_ingestion_job_returns_404_for_unknown(client: TestClient, monkeypat
 def test_post_ingestion_without_prefer_does_not_return_202(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """Without Prefer: respond-async the response is never 202 Accepted."""
     monkeypatch.setattr(
-        "open_geo_service.ingestions.routes._get_dataset_or_404",
+        "open_geo_service.ingestions.routes._ingestable_template_or_404",
         lambda _: {"id": "chirps3_precipitation_daily", "ingestion": {"plugin": "pkg.mod"}},
     )
 
@@ -205,7 +205,7 @@ def test_post_ingestion_respond_async_validates_dataset_and_extent_before_queuei
     def raise_missing_dataset(_: str) -> NoReturn:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    monkeypatch.setattr("open_geo_service.ingestions.routes._get_dataset_or_404", raise_missing_dataset)
+    monkeypatch.setattr("open_geo_service.ingestions.routes._ingestable_template_or_404", raise_missing_dataset)
 
     response = client.post(
         "/ingestions",

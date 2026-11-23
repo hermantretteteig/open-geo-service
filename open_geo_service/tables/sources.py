@@ -1,6 +1,7 @@
-"""The source, licence and providers of a computed table dataset, from the datasets it read (CLIM-1555).
+"""The source, licence and providers of a table dataset (CLIM-1555, CLIM-1556).
 
-A computed table has no template. Its record names the datasets its latest rows were computed
+A table from a data source has a template of its own, which declares them, as a raster or
+vector template does. A computed table has no template. Its record names the datasets its latest rows were computed
 from (`ingestion_services.recorded_inputs`), and their templates declare the source, licence and
 providers the table needs, so the table's are derived from theirs. An input whose template
 declares no licence, such as a workflow output without one, is followed back to the datasets it
@@ -22,9 +23,11 @@ from open_geo_service.shared.licences import STAC_LICENSE_OTHER, DatasetLicence,
 
 @dataclass(frozen=True)
 class TableSources:
-    """The templates of the datasets a table was computed from, in the order its job read them."""
+    """The templates a table's metadata comes from: its own, or those of the datasets it was computed from."""
 
     templates: tuple[dict[str, Any], ...]
+    own: dict[str, Any] | None = None
+    """The table's own template, for a table from a data source."""
 
     @property
     def licences(self) -> list[DatasetLicence]:
@@ -113,11 +116,14 @@ class TableSources:
         return ", ".join(names) or None
 
     def description(self, record: ArtifactRecord) -> str:
-        """What the table holds and what it was computed from, for a table without a template's own prose.
+        """The template's description, or what the table holds and what it was computed from.
 
         What it holds comes from what its columns represent (`TableSchema.holds`).
         """
         from open_geo_service.tables.store import schema_of
+
+        if self.own is not None and str(self.own.get("description") or "").strip():
+            return " ".join(str(self.own["description"]).split())
 
         names = [str(template.get("name") or template["id"]) for template in self.templates if template.get("id")]
         computed = ""
@@ -129,8 +135,11 @@ class TableSources:
     def template(self) -> dict[str, Any]:
         """The table's metadata in a template's shape, for the pages that read one.
 
-        Several licences are named together, as one label: no single declaration describes them.
+        A table from a data source has its own. Several licences are named together, as one
+        label: no single declaration describes them.
         """
+        if self.own is not None:
+            return self.own
         template: dict[str, Any] = {"providers": self.providers}
         if self.source is not None:
             template["source"] = self.source
@@ -140,13 +149,17 @@ class TableSources:
 
 
 def table_sources(record: ArtifactRecord) -> TableSources:
-    """The templates of the datasets *record*'s rows were computed from.
+    """The table's own template, or the templates of the datasets *record*'s rows were computed from.
 
     A record without provenance, rows written directly rather than by a job, has no sources.
     """
     from open_geo_service.data_registry.services import datasets as registry_datasets
     from open_geo_service.features import templates as feature_templates
     from open_geo_service.ingestions import services as ingestion_services
+    from open_geo_service.tables.templates import get_table_template
+
+    if (own := get_table_template(record.dataset_id)) is not None:
+        return TableSources(templates=(own,), own=own)
 
     templates: list[dict[str, Any]] = []
     seen: set[str] = set()

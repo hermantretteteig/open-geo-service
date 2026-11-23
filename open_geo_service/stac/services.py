@@ -534,9 +534,9 @@ def _build_table_collection(dataset_id: str, artifact: ArtifactRecord, request: 
     table's schema, each with its description and the value columns with their unit, and the file
     itself as the `data` asset. The spatial extent is the bounds of the feature collections the
     values are reported on, and the temporal one the first and last period, as the schema's columns
-    represent them. A computed table has no
-    template, so its licence and providers are its sources' (`tables.sources`); `derived_from`
-    links name those sources and `via` links the pages their data came from.
+    represent them. Its licence, providers and `via` links are its template's, for a table from a
+    data source, or its sources' for a computed table (`tables.sources`), whose `derived_from`
+    links name those sources.
     """
     from open_geo_service.tables import store as table_store
     from open_geo_service.tables.sources import table_sources
@@ -590,7 +590,7 @@ def _build_table_collection(dataset_id: str, artifact: ArtifactRecord, request: 
                 title=input_id,
             )
         )
-    for source_url in _source_pages(dataset_id, {}):
+    for source_url in _source_pages(dataset_id, sources.template()):
         collection.add_link(pystac.Link(rel="via", target=source_url, media_type="text/html", title="Source"))
     for link in _document_links():
         collection.add_link(

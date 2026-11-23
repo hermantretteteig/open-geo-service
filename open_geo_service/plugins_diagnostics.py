@@ -19,6 +19,7 @@ logger = logging.getLogger("open_geo_service")
 _PLUGIN_SUBDIRS: tuple[tuple[str, str], ...] = (
     ("rasters", "*.y*ml"),
     ("vectors", "*.y*ml"),
+    ("tables", "*.y*ml"),
     ("processes", "*.py"),
     ("workflows", "*.json"),
 )

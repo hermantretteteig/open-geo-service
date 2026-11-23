@@ -137,10 +137,10 @@ async def manage_ingest(request: Request) -> Response:
     from fastapi import HTTPException
 
     from open_geo_service.data_registry.services import datasets as registry_datasets
-    from open_geo_service.data_registry.services.datasets import get_dataset
     from open_geo_service.extents.services import get_extent_or_404
     from open_geo_service.ingestions.processes import ingest_dataset, record_inline_update
-    from open_geo_service.ingestions.services import ensure_ingestable
+    from open_geo_service.ingestions.services import ensure_ingestable, get_ingestable_template
+    from open_geo_service.tables.templates import is_table_template
 
     try:
         form = await request.form()
@@ -151,7 +151,7 @@ async def manage_ingest(request: Request) -> Response:
         publish = "publish" in form
         overwrite = "overwrite" in form
 
-        template = get_dataset(dataset_id)
+        template = get_ingestable_template(dataset_id)
         if template is None:
             return _refusal(404, f"Data source '{dataset_id}' not found")
 
@@ -163,7 +163,12 @@ async def manage_ingest(request: Request) -> Response:
         # A climatology has no start to give: its ids are ordinals and its reference period is
         # fixed by the template, so the form offers no date and the refusal must not demand one.
         # A static dataset without a time axis (CLIM-1448) has no periods at all.
-        dated = not registry_datasets.is_timeless(template) and has_calendar_periods(template.get("period_type"))
+        # A table may leave it blank too: its source is read from the first period it has.
+        dated = (
+            not registry_datasets.is_timeless(template)
+            and has_calendar_periods(template.get("period_type"))
+            and not is_table_template(template)
+        )
         future = registry_datasets.is_future_facing(template)
         if start is None and dated and not future:
             return _refusal(400, f"Start period is required for '{dataset_id}': its periods are not in the future")

@@ -780,3 +780,188 @@ def test_a_schema_that_cannot_hold_its_rules_is_refused_naming_its_file(column: 
     declared = {"id": "stations", "columns": [{"name": "station", "type": "string"}, column], "key": ["station"]}
     with pytest.raises(ValueError, match=f"table schema 'stations' in stations.yaml.*{message}"):
         parse_schema(declared, source="stations.yaml")
+
+
+# --- table templates and their plugins (CLIM-1556) ------------------------------------------
+
+RAINFALL_TEMPLATE = """\
+- id: district_rainfall
+  name: Rainfall by district
+  description: Monthly rainfall per district, from the met office's stations.
+  source: Met Office
+  source_url: https://met.example.org/rainfall
+  license: CC-BY-4.0
+  providers:
+    - {name: Met Office, url: https://met.example.org, roles: [producer, licensor]}
+  period_type: monthly
+  collection: districts
+  ingestion:
+    plugin: open_geo_service.plugins.tables.csv_file.CsvTablePlugin
+    params:
+      path: rainfall.csv
+      columns: {feature_id: district, period_start: month, value: rainfall_mm}
+      constants: {unit: mm}
+"""
+
+HAPI_TEMPLATE = """\
+- id: district_rainfall_hapi
+  name: Rainfall by district (HDX HAPI)
+  license: CC-BY-IGO-3.0
+  period_type: monthly
+  collection: districts
+  ingestion:
+    plugin: open_geo_service.plugins.tables.hdx_hapi.HapiTablePlugin
+    params:
+      endpoint: climate/rainfall
+      filters: {aggregation_period: 1-month, version: final}
+      columns: {value: rainfall}
+      constants: {unit: mm}
+"""
+
+
+@pytest.fixture
+def plugins_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """An instance whose plugins_dir holds the rainfall table template, reading rainfall.csv beside its config."""
+    root = tmp_path / "plugins"
+    (root / "tables").mkdir(parents=True)
+    (root / "tables" / "rainfall.yaml").write_text(RAINFALL_TEMPLATE + HAPI_TEMPLATE, encoding="utf-8")
+    (tmp_path / "rainfall.csv").write_text(
+        "district,month,rainfall_mm,station_count\nD1,2026-01,120.5,3\nD2,2026-01,98,2\nD1,2026-02,,0\nD2,2026-02,80,2\n",
+        encoding="utf-8",
+    )
+    config = api_config.get_config()
+    monkeypatch.setattr(api_config, "get_config", lambda: {**config, "plugins_dir": str(root)})
+    monkeypatch.setattr(api_config, "get_config_path", lambda: tmp_path / "geoservice.yaml")
+    return tmp_path
+
+
+def test_a_table_template_is_listed_ingested_synced_and_described_by_its_template(
+    client: TestClient, plugins_dir: Path
+) -> None:
+    listed = {source["id"]: source for source in client.get("/data-sources").json()}
+    assert listed["district_rainfall"]["itemType"] == "table"
+    assert listed["district_rainfall"]["schema"] == "aggregation"
+    assert "Rainfall by district" in client.get("/data-sources", params={"f": "html"}).text
+    assert "Feature collection" in client.get("/data-sources/district_rainfall", params={"f": "html"}).text
+    assert client.get("/data-sources/district_rainfall").json()["has_data"] is False
+
+    assert client.post("/ingestions", json={"dataset_id": "district_rainfall"}).status_code == 200
+    rows = client.get("/tables/district_rainfall/rows").json()["items"]
+    assert [(row["feature_id"], row["period"], row["value"], row["unit"]) for row in rows] == [
+        ("D1", "2026-01", 120.5, "mm"),
+        ("D1", "2026-02", None, "mm"),
+        ("D2", "2026-01", 98.0, "mm"),
+        ("D2", "2026-02", 80.0, "mm"),
+    ]
+
+    dataset = client.get("/datasets/district_rainfall").json()
+    assert dataset["description"] == "Monthly rainfall per district, from the met office's stations."
+    assert (dataset["license"], dataset["source"]) == ("CC-BY-4.0", "Met Office")
+    assert [provider["name"] for provider in dataset["providers"]] == ["Met Office"]
+    stac = client.get("/stac/district_rainfall/collection.json").json()
+    assert stac["license"] == "CC-BY-4.0"
+    assert stac["providers"][0] == {
+        "name": "Met Office",
+        "url": "https://met.example.org",
+        "roles": ["producer", "licensor"],
+    }
+    assert [link["href"] for link in stac["links"] if link["rel"] == "via"] == ["https://met.example.org/rainfall"]
+    assert "Monthly rainfall per district" in client.get("/stac/district_rainfall/README.md").text
+    assert "its data source" in client.get("/datasets/district_rainfall", params={"f": "html"}).text
+
+    assert client.post("/sync/district_rainfall", json={}).json()["status"] == "up_to_date"
+    with (plugins_dir / "rainfall.csv").open("a", encoding="utf-8") as csv_file:
+        csv_file.write("D1,2026-03-31,40,3\n")
+    assert client.get("/sync/district_rainfall/plan").json()["delta_start"] == "2026-03"
+    synced = client.post("/sync/district_rainfall", json={}).json()
+    assert (synced["status"], synced["dataset"]["extent"]["temporal"]["end"]) == ("completed", "2026-03")
+
+    with (plugins_dir / "rainfall.csv").open("a", encoding="utf-8") as csv_file:
+        csv_file.write("D3,2026-04,lots,1\n")
+    refused = client.post("/ingestions", json={"dataset_id": "district_rainfall", "start": "2026-04"})
+    assert refused.status_code == 400
+    assert "CSV line 7: value 'lots' is not a double" in refused.json()["detail"]
+
+    _write([_row("D1", 1.0)])
+    assert client.post("/sync/precip_districts", json={}).status_code == 409
+
+
+def test_hdx_hapi_rows_are_read_page_by_page_for_the_extents_country(
+    client: TestClient, plugins_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+
+    from open_geo_service.plugins.tables import hdx_hapi
+
+    def row(code: str, start: str, rainfall: float) -> dict[str, Any]:
+        return {
+            "admin2_code": code,
+            "admin2_name": code,
+            "reference_period_start": f"{start}T00:00:00",
+            "rainfall": rainfall,
+        }
+
+    pages = [[row("D1", "2026-01-01", 120.5), row("D2", "2026-01-01", 98.0)], [row("D1", "2026-02-01", 80.0)]]
+    queries: list[dict[str, str]] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        queries.append(dict(request.url.params))
+        return httpx.Response(200, json={"data": pages[int(request.url.params["offset"]) // 2]})
+
+    monkeypatch.setenv("HDX_HAPI_APP_IDENTIFIER", "app")
+    monkeypatch.setattr(hdx_hapi, "PAGE_SIZE", 2)
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(answer), **kw))
+    response = client.post("/ingestions", json={"dataset_id": "district_rainfall_hapi", "start": "2026-01"})
+
+    assert response.status_code == 200, response.text
+    assert [(q["offset"], q["location_code"], q["admin_level"], q["start_date"], q["version"]) for q in queries] == [
+        ("0", "SLE", "2", "2026-01-01", "final"),
+        ("2", "SLE", "2", "2026-01-01", "final"),
+    ]
+    rows = client.get("/tables/district_rainfall_hapi/rows").json()["items"]
+    assert [(r["feature_id"], r["period"], r["value"], r["unit"]) for r in rows] == [
+        ("D1", "2026-01", 120.5, "mm"),
+        ("D1", "2026-02", 80.0, "mm"),
+        ("D2", "2026-01", 98.0, "mm"),
+    ]
+
+
+def test_a_table_template_in_an_installed_plugin_package_is_discovered(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from open_geo_service import plugin_discovery
+    from open_geo_service.tables.templates import get_table_template, reset_table_template_caches
+
+    (tmp_path / "tables").mkdir()
+    (tmp_path / "tables" / "rainfall.yaml").write_text(RAINFALL_TEMPLATE, encoding="utf-8")
+    monkeypatch.setattr(
+        plugin_discovery, "iter_plugin_subdirs", lambda _sub: iter([("met", "met", tmp_path / "tables")])
+    )
+    reset_table_template_caches()
+    try:
+        template = get_table_template("district_rainfall")
+    finally:
+        reset_table_template_caches()
+    assert template is not None and template["collection"] == "districts"
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"collection": None}, "reports on features; name their feature collection"),
+        ({"schema": "stations"}, "no table schema 'stations'"),
+        ({"period_type": "hourly"}, "must define a period_type"),
+        ({"ingestion": None}, "must define 'ingestion.plugin'"),
+    ],
+)
+def test_a_table_template_that_cannot_be_ingested_is_refused_naming_its_file(
+    change: dict[str, Any], message: str
+) -> None:
+    import yaml
+
+    from open_geo_service.tables.templates import _validated
+
+    template = {**yaml.safe_load(RAINFALL_TEMPLATE)[0], **change}
+    with pytest.raises(ValueError, match=f"Table template 'district_rainfall' in rainfall.yaml.*{message}"):
+        _validated({key: value for key, value in template.items() if value is not None}, source="rainfall.yaml")

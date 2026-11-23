@@ -22,7 +22,7 @@
 
       <main id="content">
         <h2 id="data-sources-title" tabindex="-1">Data sources</h2>
-        <p class="lead">Data this instance can fetch from outside providers: raster and vector data.</p>
+        <p class="lead">Data this instance can fetch from outside providers: raster, vector and table data.</p>
         {% if sources %}
         {% set periods = sources | map(attribute="period_type") | reject("equalto", "") | unique | sort | list %}
         {% set kinds = sources | map(attribute="kind") | unique | sort | list %}
@@ -39,6 +39,7 @@
                 <option value="">All</option>
                 <option value="raster">Raster</option>
                 <option value="vector">Vector</option>
+                <option value="table">Table</option>
               </select>
             </label>
             {% endif %}

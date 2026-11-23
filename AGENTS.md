@@ -8,7 +8,7 @@ The Open Geo Service is a FastAPI-based REST API that downloads, processes, and 
 
 Key concepts:
 
-- **Data sources** — upstream datasets this instance can fetch, each described by a **dataset template**: a YAML entry in `plugins/rasters/` (variable, period type, download plugin) or `plugins/vectors/` (feature provider and its params). These are blueprints; the data sources are listed at `GET /data-sources` and on the Data sources page.
+- **Data sources** — upstream datasets this instance can fetch, each described by a **dataset template**: a YAML entry in `plugins/rasters/` (variable, period type, download plugin), `plugins/vectors/` (feature provider and its params) or `plugins/tables/` (table schema and row plugin). These are blueprints; the data sources are listed at `GET /data-sources` and on the Data sources page.
 - **Artifacts / managed datasets** — ingested instances of a template for a specific spatial extent and time range. Exposed under `/datasets` and `/zarr/{dataset_id}`.
 - **Extent** — a single named spatial bounding box configured at instance setup time (`id`, `bbox`, optional `country_code`). Exposed at `GET /extent`.
 - **GeoZarr stores** — datasets are stored as chunked Zarr v3 archives with GeoZarr spatial attributes. Flat stores for small extents; multiscale pyramids for large ones. Served chunk-by-chunk over HTTP with no specialised server middleware.
@@ -23,6 +23,7 @@ open_geo_service/
   data_registry/    # raster dataset template loading
   ingestions/       # artifact lifecycle: create, list, sync, publish
   features/         # feature collection store, GeoParquet reader, GET /features
+  tables/           # table store, schemas, templates and their ingest, GET /tables
   publications/     # STAC publication metadata
   extents/          # spatial extent config
   shared/           # dhis2 adapter, time utils
@@ -30,6 +31,7 @@ open_geo_service/
   main.py           # FastAPI app, CORS middleware, route registration
 open_geo_service/plugins/rasters/   # built-in raster dataset templates (chirps3.yaml, worldpop.yaml, …)
 open_geo_service/plugins/vectors/   # built-in vector dataset templates and providers
+open_geo_service/plugins/tables/   # table plugins (CSV); table templates go here too
 open_geo_service/plugins/tables/schemas/   # built-in table schemas (aggregation.yaml)
 tests/
 docs/
