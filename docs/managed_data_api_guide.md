@@ -772,18 +772,23 @@ date or a period id (`2026-01`, `2026-W01`, `2026`).
 
 ```yaml
 - id: rainfall_hapi
-  name: Monthly rainfall by district (HDX HAPI)
-  license: CC-BY-IGO-3.0
-  period_type: monthly
-  collection: districts      # boundaries whose ids are HAPI's p-codes, such as HDX COD-AB
+  name: Rainfall per dekad by province (HDX HAPI)
+  period_type: dekadal
+  collection: provinces      # boundaries whose ids are HAPI's p-codes, such as HDX COD-AB
   ingestion:
     plugin: open_geo_service.plugins.tables.hdx_hapi.HapiTablePlugin
     params:
       endpoint: climate/rainfall
-      filters: {aggregation_period: 1-month, version: final}
+      admin_level: 1
+      filters: {aggregation_period: dekad, version: final}
       columns: {value: rainfall}
       constants: {unit: mm}
 ```
+
+HAPI reports rainfall every dekad, whatever its `aggregation_period`: a `1-month` row is the total
+of the three dekads up to the one it is dated by, so a monthly table cannot be read from it.
+What HAPI has for a country, and at which admin level, is listed by its
+`metadata/data-availability` endpoint; Sierra Leone's rainfall, for one, is per province only.
 
 Rows name their features by id, and the store refuses an id the collection lacks. Use boundaries
 of the same edition as the table: HDX's 2020 Sierra Leone population counts code Kambia and Port

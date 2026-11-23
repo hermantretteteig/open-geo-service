@@ -805,15 +805,15 @@ RAINFALL_TEMPLATE = """\
 
 HAPI_TEMPLATE = """\
 - id: district_rainfall_hapi
-  name: Rainfall by district (HDX HAPI)
+  name: Rainfall per dekad by district (HDX HAPI)
   license: CC-BY-IGO-3.0
-  period_type: monthly
+  period_type: dekadal
   collection: districts
   ingestion:
     plugin: open_geo_service.plugins.tables.hdx_hapi.HapiTablePlugin
     params:
       endpoint: climate/rainfall
-      filters: {aggregation_period: 1-month, version: final}
+      filters: {aggregation_period: dekad, version: final}
       columns: {value: rainfall}
       constants: {unit: mm}
 """
@@ -901,7 +901,7 @@ def test_hdx_hapi_rows_are_read_page_by_page_for_the_extents_country(
             "rainfall": rainfall,
         }
 
-    pages = [[row("D1", "2026-01-01", 120.5), row("D2", "2026-01-01", 98.0)], [row("D1", "2026-02-01", 80.0)]]
+    pages = [[row("D1", "2026-01-01", 120.5), row("D2", "2026-01-01", 98.0)], [row("D1", "2026-01-11", 80.0)]]
     queries: list[dict[str, str]] = []
 
     def answer(request: httpx.Request) -> httpx.Response:
@@ -912,7 +912,7 @@ def test_hdx_hapi_rows_are_read_page_by_page_for_the_extents_country(
     monkeypatch.setattr(hdx_hapi, "PAGE_SIZE", 2)
     real_client = httpx.Client
     monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(answer), **kw))
-    response = client.post("/ingestions", json={"dataset_id": "district_rainfall_hapi", "start": "2026-01"})
+    response = client.post("/ingestions", json={"dataset_id": "district_rainfall_hapi", "start": "2026-01-01"})
 
     assert response.status_code == 200, response.text
     assert [(q["offset"], q["location_code"], q["admin_level"], q["start_date"], q["version"]) for q in queries] == [
@@ -921,9 +921,9 @@ def test_hdx_hapi_rows_are_read_page_by_page_for_the_extents_country(
     ]
     rows = client.get("/tables/district_rainfall_hapi/rows").json()["items"]
     assert [(r["feature_id"], r["period"], r["value"], r["unit"]) for r in rows] == [
-        ("D1", "2026-01", 120.5, "mm"),
-        ("D1", "2026-02", 80.0, "mm"),
-        ("D2", "2026-01", 98.0, "mm"),
+        ("D1", "2026-01-01", 120.5, "mm"),
+        ("D1", "2026-01-11", 80.0, "mm"),
+        ("D2", "2026-01-01", 98.0, "mm"),
     ]
 
 

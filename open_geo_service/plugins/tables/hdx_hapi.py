@@ -27,7 +27,7 @@ class HapiTablePlugin(FieldsTablePlugin):
     Rows are the *admin_level* (1 or 2) areas of *location_code*, the instance extent's country
     by default, and name their feature by its p-code (`admin2_code`) and their period by its
     start (`reference_period_start`). The template maps the value field, as `columns: {value:
-    rainfall}`. *filters* are further query parameters, such as `{aggregation_period: 1-month,
+    rainfall}`. *filters* are further query parameters, such as `{aggregation_period: dekad,
     version: final}`, which keep one row per area and period.
     """
 
