@@ -761,42 +761,12 @@ date or a period id (`2026-01`, `2026-W01`, `2026`).
 - `open_geo_service.plugins.tables.csv_file.CsvTablePlugin` reads one CSV file, once per ingestion
   or sync, from `path`: a file path relative to the config file, or an http(s) URL. Most files on
   the Humanitarian Data Exchange (data.humdata.org) can be read this way.
-- `open_geo_service.plugins.tables.hdx_hapi.HapiTablePlugin` reads one endpoint of
-  [HDX HAPI](https://hapi.humdata.org/docs), such as `climate/rainfall`,
-  `geography-infrastructure/baseline-population` or `coordination-context/conflict-events`, with
-  one paged query per ingestion or sync. Rows are the `admin_level` (1 or 2, default 2) areas of
-  the extent's country, or `location_code`, named by p-code (`admin2_code`) and period start
-  (`reference_period_start`); map the value field with `columns`, and keep one row per area and
-  period with `filters`. Rows HAPI could not match to a current p-code, with a code ending in
-  `-XXX`, are skipped and named in the log. Set `HDX_HAPI_APP_IDENTIFIER` in `.env`, an
-  application name and contact email encoded by HAPI's `encode_app_identifier`. Food insecurity
-  ships as a template; see [Built-in datasets](built_in_datasets.md#hdx-hapi--food-insecurity-table).
 - `open_geo_service.plugins.tables.ipc.IpcAreasPlugin` reads the analyses IPC publishes for the
   extent's country, shipped as `ipc_food_security`; see
   [Built-in datasets](built_in_datasets.md#ipc--acute-food-insecurity-feature-collection-and-table).
 - `open_geo_service.plugins.tables.wfp.WfpPricesPlugin` reads the market prices WFP publishes for
   the extent's country, shipped as `wfp_food_prices`; see
   [Built-in datasets](built_in_datasets.md#wfp--market-food-prices-feature-collection-and-table).
-
-```yaml
-- id: rainfall_hapi
-  name: Rainfall per dekad by province (HDX HAPI)
-  period_type: dekadal
-  collection: provinces      # boundaries whose ids are HAPI's p-codes, such as HDX COD-AB
-  ingestion:
-    plugin: open_geo_service.plugins.tables.hdx_hapi.HapiTablePlugin
-    params:
-      endpoint: climate/rainfall
-      admin_level: 1
-      filters: {aggregation_period: dekad, version: final}
-      columns: {value: rainfall}
-      constants: {unit: mm}
-```
-
-HAPI reports rainfall every dekad, whatever its `aggregation_period`: a `1-month` row is the total
-of the three dekads up to the one it is dated by, so a monthly table cannot be read from it.
-What HAPI has for a country, and at which admin level, is listed by its
-`metadata/data-availability` endpoint; Sierra Leone's rainfall, for one, is per province only.
 
 Rows name their features by id, and the store refuses an id the collection lacks. Use boundaries
 of the same edition as the table: HDX's 2020 Sierra Leone population counts code Kambia and Port

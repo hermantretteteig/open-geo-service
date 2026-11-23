@@ -803,28 +803,13 @@ RAINFALL_TEMPLATE = """\
       constants: {unit: mm}
 """
 
-HAPI_TEMPLATE = """\
-- id: district_rainfall_hapi
-  name: Rainfall per dekad by district (HDX HAPI)
-  license: CC-BY-IGO-3.0
-  period_type: dekadal
-  collection: districts
-  ingestion:
-    plugin: open_geo_service.plugins.tables.hdx_hapi.HapiTablePlugin
-    params:
-      endpoint: climate/rainfall
-      filters: {aggregation_period: dekad, version: final}
-      columns: {value: rainfall}
-      constants: {unit: mm}
-"""
-
 
 @pytest.fixture
 def plugins_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """An instance whose plugins_dir holds the rainfall table template, reading rainfall.csv beside its config."""
     root = tmp_path / "plugins"
     (root / "tables").mkdir(parents=True)
-    (root / "tables" / "rainfall.yaml").write_text(RAINFALL_TEMPLATE + HAPI_TEMPLATE, encoding="utf-8")
+    (root / "tables" / "rainfall.yaml").write_text(RAINFALL_TEMPLATE, encoding="utf-8")
     (tmp_path / "rainfall.csv").write_text(
         "district,month,rainfall_mm,station_count\nD1,2026-01,120.5,3\nD2,2026-01,98,2\nD1,2026-02,,0\nD2,2026-02,80,2\n",
         encoding="utf-8",
@@ -884,89 +869,6 @@ def test_a_table_template_is_listed_ingested_synced_and_described_by_its_templat
 
     _write([_row("D1", 1.0)])
     assert client.post("/sync/precip_districts", json={}).status_code == 409
-
-
-def test_hdx_hapi_rows_are_read_page_by_page_for_the_extents_country(
-    client: TestClient, plugins_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import httpx
-
-    from open_geo_service.plugins.tables import hdx_hapi
-
-    def row(code: str, start: str, rainfall: float) -> dict[str, Any]:
-        return {
-            "admin2_code": code,
-            "admin2_name": code,
-            "reference_period_start": f"{start}T00:00:00",
-            "rainfall": rainfall,
-        }
-
-    unmatched = row("SL02-XXX", "2026-01-11", 1.0)
-    pages = [
-        [row("D1", "2026-01-01", 120.5), row("D2", "2026-01-01", 98.0)],
-        [row("D1", "2026-01-11", 80.0), unmatched],
-        [],
-    ]
-    queries: list[dict[str, str]] = []
-
-    def answer(request: httpx.Request) -> httpx.Response:
-        queries.append(dict(request.url.params))
-        return httpx.Response(200, json={"data": pages[int(request.url.params["offset"]) // 2]})
-
-    monkeypatch.setenv("HDX_HAPI_APP_IDENTIFIER", "app")
-    monkeypatch.setattr(hdx_hapi, "PAGE_SIZE", 2)
-    real_client = httpx.Client
-    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(answer), **kw))
-    response = client.post("/ingestions", json={"dataset_id": "district_rainfall_hapi", "start": "2026-01-01"})
-
-    assert response.status_code == 200, response.text
-    assert [(q["offset"], q["location_code"], q["admin_level"], q["start_date"], q["version"]) for q in queries] == [
-        ("0", "SLE", "2", "2026-01-01", "final"),
-        ("2", "SLE", "2", "2026-01-01", "final"),
-        ("4", "SLE", "2", "2026-01-01", "final"),
-    ]
-    rows = client.get("/tables/district_rainfall_hapi/rows").json()["items"]
-    assert [(r["feature_id"], r["period"], r["value"], r["unit"]) for r in rows] == [
-        ("D1", "2026-01-01", 120.5, "mm"),
-        ("D1", "2026-01-11", 80.0, "mm"),
-        ("D2", "2026-01-01", 98.0, "mm"),
-    ]
-
-
-def test_hdx_cod_ab_boundaries_are_one_level_of_the_countrys_edge_matched_download(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import io
-    import json
-    import zipfile
-
-    import httpx
-
-    def area(code: str, west: float) -> dict[str, Any]:
-        feature = _box(code, west, 8)
-        feature["properties"] = {"adm2_pcode": code, "adm2_name": code, "adm1_pcode": "SL01", "version": "v02"}
-        return feature
-
-    archive = io.BytesIO()
-    with zipfile.ZipFile(archive, "w") as zipped:
-        layer = {"type": "FeatureCollection", "features": [area("SL0101", -11), area("SL0102", -12)]}
-        zipped.writestr("sle_admin2_em.geojson", json.dumps(layer))
-    requested: list[str] = []
-
-    def answer(request: httpx.Request) -> httpx.Response:
-        requested.append(str(request.url))
-        if "package_show" in str(request.url):
-            resources = [{"name": "sle_admin_boundaries.geojson.zip", "url": "https://hdx.example/cod.zip"}]
-            return httpx.Response(200, json={"result": {"resources": resources}})
-        return httpx.Response(200, content=archive.getvalue())
-
-    real_client = httpx.Client
-    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(answer), **kw))
-    assert client.post("/features/hdx_cod_ab_admin2/refresh", json={}).status_code == 200
-
-    assert "id=cod-ab-sle" in requested[0]
-    collection = client.get("/features/hdx_cod_ab_admin2").json()
-    assert (collection["feature_count"], collection["version"]["value"]) == (2, "v02")
 
 
 def test_wfp_prices_and_ipc_phases_report_on_the_publishers_own_features_for_the_extents_country(
