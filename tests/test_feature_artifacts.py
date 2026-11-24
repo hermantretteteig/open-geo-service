@@ -88,7 +88,12 @@ def _feature_artifact(
     )
 
 
-def _raster_artifact(*, artifact_id: str = "r1", dataset_id: str = "chirps3_precipitation_daily") -> ArtifactRecord:
+def _raster_artifact(
+    *,
+    artifact_id: str = "r1",
+    dataset_id: str = "chirps3_precipitation_daily",
+    status: PublicationStatus = PublicationStatus.PUBLISHED,
+) -> ArtifactRecord:
     path = f"/tmp/{dataset_id}.icechunk"
     return ArtifactRecord(
         artifact_id=artifact_id,
@@ -106,7 +111,7 @@ def _raster_artifact(*, artifact_id: str = "r1", dataset_id: str = "chirps3_prec
             temporal=CoverageTemporal(start="2026-01-01", end="2026-01-10"),
         ),
         created_at=datetime(2026, 1, 10, tzinfo=UTC),
-        publication=ArtifactPublication(status=PublicationStatus.PUBLISHED, collection_id=dataset_id),
+        publication=ArtifactPublication(status=status, collection_id=dataset_id),
     )
 
 
@@ -767,11 +772,12 @@ def test_a_refresh_replaces_the_collection_even_when_the_extract_window_changed(
 
 def test_a_raster_still_keeps_one_record_per_request_scope(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The feature identity rule is narrow: raster version history is untouched by it."""
+    # Unpublished: registering a published record moves its store's published branch, and these have no store.
     artifacts_dir = tmp_path / "artifacts"
     monkeypatch.setattr(services, "ARTIFACTS_DIR", artifacts_dir)
     monkeypatch.setattr(services, "ARTIFACTS_INDEX_PATH", artifacts_dir / "records.json")
-    january = _raster_artifact(artifact_id="r1")
-    february = _raster_artifact(artifact_id="r2")
+    january = _raster_artifact(artifact_id="r1", status=PublicationStatus.UNPUBLISHED)
+    february = _raster_artifact(artifact_id="r2", status=PublicationStatus.UNPUBLISHED)
     february.request_scope.start = "2026-02-01"
 
     services.register_artifact_record(january, publish=False)
@@ -785,7 +791,7 @@ def test_raster_overwrite_does_not_replace_feature_with_same_dataset_and_scope(
 ) -> None:
     _tmp_record_store(monkeypatch, tmp_path)
     feature = _feature_artifact()
-    raster = _raster_artifact(dataset_id=feature.dataset_id)
+    raster = _raster_artifact(dataset_id=feature.dataset_id, status=PublicationStatus.UNPUBLISHED)
     raster.request_scope = feature.request_scope.model_copy(deep=True)
     services.register_artifact_record(feature, publish=False)
 
