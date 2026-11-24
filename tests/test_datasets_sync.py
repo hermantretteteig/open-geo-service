@@ -1895,7 +1895,9 @@ def test_plan_sync_append_for_icechunk_artifact(
     assert result.action == SyncAction.APPEND
 
 
-def test_cleanup_removes_the_branches_a_killed_ingest_left(tmp_path: Path) -> None:
+def test_cleanup_removes_the_branches_a_killed_ingest_left(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import icechunk
+
     from open_geo_service.ingestions.services import clean_up_interrupted_ingest
     from open_geo_service.streaming.store import open_or_create_repo
 
@@ -1905,7 +1907,18 @@ def test_cleanup_removes_the_branches_a_killed_ingest_left(tmp_path: Path) -> No
     repo.create_branch("ogs-ingest-rollback-first", snapshot)
     repo.create_branch("ogs-ingest-replacement-second", snapshot)
     repo.create_branch("kept", snapshot)
+    delete_branch = icechunk.Repository.delete_branch
 
+    def refuse_first(self: icechunk.Repository, branch: str) -> None:
+        if branch == "ogs-ingest-rollback-first":
+            raise OSError("delete failed")
+        delete_branch(self, branch)
+
+    # One branch that cannot be deleted leaves the others to go, and waits for the next cleanup.
+    monkeypatch.setattr(icechunk.Repository, "delete_branch", refuse_first)
+    assert clean_up_interrupted_ingest(target) is True
+    assert repo.list_branches() == {"main", "kept", "ogs-ingest-rollback-first"}
+    monkeypatch.undo()
     assert clean_up_interrupted_ingest(target) is True
     assert repo.list_branches() == {"main", "kept"}
     assert clean_up_interrupted_ingest(tmp_path / "new.icechunk") is False

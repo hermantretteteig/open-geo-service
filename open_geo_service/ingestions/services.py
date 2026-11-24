@@ -1506,11 +1506,7 @@ def _create_streaming_artifact(
                 for branch in (rollback_branch, replacement_branch):
                     if branch is None or (rollback_error is not None and branch == rollback_branch):
                         continue  # the rollback branch still names the version to restore by hand
-                    try:
-                        _delete_branch(repo, branch)
-                    except Exception:
-                        # Left for the next cleanup (`clean_up_interrupted_ingest`), which removes it.
-                        logger.warning("Could not delete branch '%s' of '%s'", branch, store_path, exc_info=True)
+                    _delete_branch(repo, branch, store_path)
             if rollback_error is None and (rolled_back or replacement_branch is not None or rewritten):
                 # Still under the store lock, so nothing is mid-write. The version this ingest
                 # replaced, or the one it abandoned, is now reachable from no branch.
@@ -1550,10 +1546,7 @@ def _keep_for_restore(repo: Any, branch: str | None, snapshot: str) -> str | Non
         logger.error("Could not keep snapshot '%s' on a branch of its own", snapshot, exc_info=True)
         return branch
     if branch is not None:
-        try:
-            _delete_branch(repo, branch)
-        except Exception:
-            logger.warning("Could not delete branch '%s'; the next cleanup does", branch, exc_info=True)
+        _delete_branch(repo, branch)
     return kept
 
 
@@ -1563,13 +1556,19 @@ def _first_snapshot(repo: Any) -> str:
     return str(first.id)
 
 
-def _delete_branch(repo: Any, branch: str) -> None:
-    """Delete *branch*; one already gone is fine."""
+def _delete_branch(repo: Any, branch: str, store_path: Path | None = None) -> bool:
+    """Delete *branch*, and return whether it is gone; one already gone is fine.
+
+    Never raises: a branch that could not be deleted is logged and left for the next cleanup
+    (:func:`clean_up_interrupted_ingest`), so one failure does not stop the cleanup around it.
+    """
     try:
         repo.delete_branch(branch)
     except Exception as exc:
         if "ref not found" not in str(exc).lower():
-            raise
+            logger.warning("Could not delete branch '%s' of '%s'", branch, store_path or "a store", exc_info=True)
+            return False
+    return True
 
 
 def clean_up_interrupted_ingest(store_path: Path) -> bool:
@@ -1589,11 +1588,10 @@ def clean_up_interrupted_ingest(store_path: Path) -> bool:
     try:
         repo = open_or_create_repo(store_path)
         stale = [branch for branch in repo.list_branches() if branch.startswith(_INGEST_BRANCH_PREFIX)]
-        for branch in stale:
-            _delete_branch(repo, branch)
-        if stale:
+        deleted = [branch for branch in stale if _delete_branch(repo, branch, store_path)]
+        if deleted:
             removed = True
-            logger.warning("Removed %d branch(es) of an interrupted ingest from '%s'", len(stale), store_path)
+            logger.warning("Removed %d branch(es) of an interrupted ingest from '%s'", len(deleted), store_path)
             _collect_replaced_versions(store_path)
         collect_pending_garbage(store_path)
     except Exception:

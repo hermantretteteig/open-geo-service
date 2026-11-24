@@ -178,8 +178,8 @@ def test_cleanup_removes_a_branch_left_undeleted_but_keeps_the_one_a_failed_roll
 ) -> None:
     _ingest(store, overwrite=False)
     store["plugin"] = _ValuePlugin(2.0)
-    delete_branch = services._delete_branch
-    monkeypatch.setattr(services, "_delete_branch", _raise)
+    delete_branch = icechunk.Repository.delete_branch
+    monkeypatch.setattr(icechunk.Repository, "delete_branch", _raise)
 
     artifact = _ingest(store, overwrite=True)  # after the record is written: the new version stays
     assert artifact.coverage.temporal.end == DAYS[-1]
@@ -192,7 +192,7 @@ def test_cleanup_removes_a_branch_left_undeleted_but_keeps_the_one_a_failed_roll
     with pytest.raises(OSError, match="write failed"):
         _ingest(store, overwrite=True)
     assert _read(store["path"]) == (3, 2.0)
-    monkeypatch.setattr(services, "_delete_branch", delete_branch)
+    monkeypatch.setattr(icechunk.Repository, "delete_branch", delete_branch)
     assert services.clean_up_interrupted_ingest(store["path"])
     assert _branches(store["path"]) == {"main"}
 
