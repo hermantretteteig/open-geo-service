@@ -668,8 +668,11 @@ which stored row a write replaces, and, where it matters, what a column represen
 `plugins_dir`; a later schema with the same id replaces an earlier one. The built-in
 `aggregation` schema, in `open_geo_service/plugins/tables/schemas/aggregation.yaml`, is the one
 described above. The `table` pipeline destination writes it, and a table dataset that names no
-schema gets it. A dataset keeps the schema of its first write, and its Parquet file names it in
-its metadata as `ogs:table_schema`.
+schema gets it. A dataset keeps the schema of its first write: its record and its Parquet file's
+metadata (`ogs:table_schema`) hold the schema's declaration, and its rows are read by that, so an
+edited schema file does not change how stored rows read. A later write takes up a new name or
+description, but is refused when the schema has changed its columns or key; give a changed
+schema a new id, or delete the dataset to write it again.
 
 ```yaml
 - id: station_daily

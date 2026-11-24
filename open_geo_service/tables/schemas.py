@@ -13,8 +13,10 @@ of its own in code: its rules apply to what a column represents, whatever the co
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import importlib.resources
+import json
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -112,6 +114,25 @@ class TableSchema:
         fields = [pa.field(column.name, TYPES[column.type], nullable=column.nullable) for column in self.columns]
         return pa.schema([*fields, pa.field(WRITTEN_AT, TYPES["timestamp"], nullable=False)])
 
+    @property
+    def declaration(self) -> dict[str, Any]:
+        """The schema as a schema file would declare it, every field spelled out; `declared_schema` reads it back."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "columns": [dataclasses.asdict(column) for column in self.columns],
+            "key": list(self.key),
+        }
+
+    def reads_rows_as(self, other: TableSchema) -> bool:
+        """Whether *other* reads and keys stored rows as this does: it differs at most in names and descriptions."""
+
+        def rules(schema: TableSchema) -> tuple[object, ...]:
+            return (tuple(dataclasses.replace(column, description="") for column in schema.columns), schema.key)
+
+        return rules(self) == rules(other)
+
     def column(self, name: str) -> Column | None:
         return next((column for column in self.columns if column.name == name), None)
 
@@ -137,6 +158,16 @@ def get_schema(schema_id: str) -> TableSchema:
     if schema_id not in schemas:
         raise ValueError(f"no table schema '{schema_id}'; the schemas are {sorted(schemas)}")
     return schemas[schema_id]
+
+
+def declared_schema(declaration: dict[str, Any]) -> TableSchema:
+    """The schema a stored `TableSchema.declaration` declares, as the dataset holding it was written."""
+    return _parsed(json.dumps(declaration, sort_keys=True))
+
+
+@functools.lru_cache(maxsize=64)
+def _parsed(declaration: str) -> TableSchema:
+    return parse_schema(json.loads(declaration), source="a stored table dataset")
 
 
 def reset_schema_caches() -> None:

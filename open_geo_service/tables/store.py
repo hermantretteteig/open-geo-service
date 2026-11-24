@@ -23,6 +23,7 @@ with pyarrow.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -50,7 +51,7 @@ from open_geo_service.ingestions.schemas import (
 )
 from open_geo_service.shared.persistence import index_lock
 from open_geo_service.shared.urls import is_segment_safe_id
-from open_geo_service.tables.schemas import DEFAULT_SCHEMA, WRITTEN_AT, TableSchema, get_schema
+from open_geo_service.tables.schemas import DEFAULT_SCHEMA, WRITTEN_AT, TableSchema, declared_schema, get_schema
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +60,16 @@ PERIOD_TYPE_KEY = b"ogs:period_type"
 whether a period column holds the start of a day, a month or a year."""
 
 SCHEMA_KEY = b"ogs:table_schema"
-"""Parquet metadata key holding the id of the dataset's schema (`tables.schemas`)."""
+"""Parquet metadata key holding the declaration of the dataset's schema (`tables.schemas`), as JSON."""
+
+_INT_RANGES = {"int32": (-(2**31), 2**31 - 1), "int64": (-(2**63), 2**63 - 1)}
 
 
 def schema_of(record: ArtifactRecord | None) -> TableSchema:
-    """The schema a table dataset's rows follow: its record's, or the default for a dataset without one."""
-    return get_schema(record.table_schema if record is not None and record.table_schema else DEFAULT_SCHEMA)
+    """The schema a table dataset's rows were written with, as its record keeps it; the default for no record."""
+    if record is None or record.table_schema is None:
+        return get_schema(DEFAULT_SCHEMA)
+    return declared_schema(record.table_schema)
 
 
 def unit_of(record: ArtifactRecord, column: str) -> str | None:
@@ -125,7 +130,7 @@ def write_rows(
             provenance=provenance,
         )
         existing = latest_record(dataset_id)
-        declared = get_schema(table.schema.metadata[SCHEMA_KEY].decode())
+        declared = declared_schema(json.loads(table.schema.metadata[SCHEMA_KEY]))
         period_type = period_type or (existing.period_type if existing else None)
         merged = _merged(_read_file(existing, declared), table, declared, collection_id, period_type)
         written = _write_file(_dataset_root(dataset_id), merged, stamp)
@@ -142,7 +147,7 @@ def write_rows(
                 asset_paths=[str(written)],
                 units=units[0] if units else (existing.units if existing else None),
                 size_bytes=written.stat().st_size,
-                table_schema=declared.id,
+                table_schema=declared.declaration,
                 request_scope=ArtifactRequestScope(),
                 coverage=_coverage(merged, declared, period_type),
                 created_at=datetime.now(UTC),
@@ -279,8 +284,8 @@ def check_rows(
 
 
 def _metadata(declared: TableSchema, period_type: str | None) -> dict[bytes, bytes]:
-    """The Parquet metadata of a table's file: its schema id and, when it has one, its period type."""
-    metadata = {SCHEMA_KEY: declared.id.encode()}
+    """The Parquet metadata of a table's file: its schema's declaration and, when it has one, its period type."""
+    metadata = {SCHEMA_KEY: json.dumps(declared.declaration).encode()}
     if period_type:
         metadata[PERIOD_TYPE_KEY] = period_type.encode()
     return metadata
@@ -404,7 +409,7 @@ def latest_values(record: ArtifactRecord, limit: int) -> LatestValues | None:
     keys = [collection, feature]
     # Aggregated under a name no declared column has, so no two columns below share a name.
     newest_input = "_newest"
-    while f"{newest_input}_max" in dataset.schema.names:
+    while {newest_input, f"{newest_input}_max"} & set(dataset.schema.names):
         newest_input = f"_{newest_input}"
     newest_column = f"{newest_input}_max"
     narrow = dataset.to_table(columns=[*keys, *([name] if name else []), period])
@@ -643,7 +648,10 @@ def _typed(value: object, name: str, kind: str, *, index: int) -> Any:
         return value
     if kind == "double":
         return _number(value, name, index=index)
-    if kind in ("int32", "int64") and isinstance(value, int) and not isinstance(value, bool):
+    if kind in _INT_RANGES and isinstance(value, int) and not isinstance(value, bool):
+        low, high = _INT_RANGES[kind]
+        if not low <= value <= high:
+            raise ValueError(f"row {index}: {name} {value} is outside the {kind} range")
         return value
     if kind == "bool" and isinstance(value, bool):
         return value
@@ -763,14 +771,26 @@ def _dataset_period_type(dataset_id: str, period_type: str | None) -> str | None
 
 
 def _dataset_schema(dataset_id: str, existing: ArtifactRecord | None, schema: str | None) -> TableSchema:
-    """The schema a write uses: the dataset's own, which *schema* must not contradict, or *schema* for a new one."""
-    current = schema_of(existing).id if existing is not None else None
-    if schema is not None and current is not None and schema != current:
+    """The schema a write uses: the dataset's own, which *schema* must not contradict, or *schema* for a new one.
+
+    The dataset's schema file must still read its rows as they were written; the write takes up
+    a new name or description.
+    """
+    if existing is None:
+        return get_schema(schema or DEFAULT_SCHEMA)
+    stored = schema_of(existing)
+    if schema is not None and schema != stored.id:
         raise ValueError(
-            f"table dataset '{dataset_id}' has schema '{current}'; it cannot take rows of schema '{schema}'. "
+            f"table dataset '{dataset_id}' has schema '{stored.id}'; it cannot take rows of schema '{schema}'. "
             "Write them to another table dataset"
         )
-    return get_schema(schema or current or DEFAULT_SCHEMA)
+    current = get_schema(stored.id)
+    if not current.reads_rows_as(stored):
+        raise ValueError(
+            f"table schema '{stored.id}' has changed its columns or key since table dataset '{dataset_id}' was "
+            "written. Give the changed schema a new id, or delete the dataset to write it again"
+        )
+    return current
 
 
 def require_table_id(dataset_id: str) -> None:

@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from open_geo_service.data_registry.services import datasets as registry_datasets
 from open_geo_service.features import templates as feature_templates
 from open_geo_service.ingestions.schemas import ArtifactProvenance
-from open_geo_service.tables import store
+from open_geo_service.tables import schemas, store
 from tests.test_table_datasets import _row, stores  # noqa: F401  # pyright: ignore[reportUnusedImport]  (autouse)
 
 PRECIP = {
@@ -345,15 +345,16 @@ STATION_SCHEMA = """
     - {name: station, type: string, required: true, nullable: false, description: Id of the station.}
     - {name: day, type: date, required: true, nullable: false, represents: period_start, description: Day observed.}
     - {name: rainfall, type: double, unit: mm, represents: value, description: Rainfall over the day.}
+    - {name: gauges, type: int32, description: Gauges read.}
   key: [station, day]
 - id: district_daily
-  name: Daily district values, by a feature column named like the period's maximum
+  name: Daily district values, by a feature column named as the latest values name a period
   columns:
     - {name: collection_id, type: string, nullable: false}
-    - {name: day_max, type: string, required: true, nullable: false, represents: feature_id}
+    - {name: _newest, type: string, required: true, nullable: false, represents: feature_id}
     - {name: day, type: date, required: true, nullable: false, represents: period_start}
     - {name: value, type: double}
-  key: [collection_id, day_max, day]
+  key: [collection_id, _newest, day]
 """
 
 
@@ -377,13 +378,15 @@ def test_a_table_follows_the_schema_it_declares_and_skips_what_its_roles_do_not_
         schema="station_daily",
         period_type="daily",
     )
-    assert record.table_schema == "station_daily"
+    assert record.table_schema is not None and record.table_schema["id"] == "station_daily"
     with pytest.raises(ValueError, match=r"unknown columns \['feature_id', 'period_start', 'reducer', 'value'\]"):
         write([_row("D1", 1.0)])
     with pytest.raises(ValueError, match="has schema 'station_daily'; it cannot take rows of schema 'aggregation'"):
         write([{"station": "S1", "day": "2026-01-03"}], schema="aggregation")
     with pytest.raises(ValueError, match="has no feature column"):
         write([{"station": "S1", "day": "2026-01-03"}], collection_id="districts")
+    with pytest.raises(ValueError, match="row 0: gauges 2147483648 is outside the int32 range"):
+        write([{"station": "S1", "day": "2026-01-03", "gauges": 2**31}])
 
     rows = client.get("/tables/stations/rows").json()["items"]
     assert [(row["station"], row["period"], row["day"], row["period_end"], row["rainfall"]) for row in rows] == [
@@ -391,13 +394,14 @@ def test_a_table_follows_the_schema_it_declares_and_skips_what_its_roles_do_not_
         ("S1", "2026-01-02", "2026-01-02", "2026-01-02", 4.0),
     ]
     header = client.get("/tables/stations/rows", params={"format": "csv"}).text.splitlines()[0]
-    assert header == "station,period,day,period_end,rainfall,written_at"
+    assert header == "station,period,day,period_end,rainfall,gauges,written_at"
     assert client.get("/tables/stations/rows", params={"feature": "S1"}).status_code == 400
     assert client.get("/tables/stations/rows", params={"reducer": "mean"}).status_code == 400
 
     collection = client.get("/stac/stations/collection.json").json()
     assert collection["description"] == "Station rainfall: values per daily period."
-    assert [column["name"] for column in collection["table:columns"]] == ["station", "day", "rainfall", "written_at"]
+    columns = ["station", "day", "rainfall", "gauges", "written_at"]
+    assert [column["name"] for column in collection["table:columns"]] == columns
     assert collection["table:columns"][2]["unit"] == "mm"
     assert collection["extent"]["temporal"]["interval"] == [["2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"]]
     assert collection["extent"]["spatial"]["bbox"] == [[-180.0, -90.0, 180.0, 90.0]]
@@ -411,11 +415,25 @@ def test_a_table_follows_the_schema_it_declares_and_skips_what_its_roles_do_not_
     assert "Station rainfall" in page and "Latest value of each feature" not in page
     assert "2 rows in all" in page and "no rows yet" not in page
 
-    # A column named as the period's aggregate would be does not confuse the latest values.
+    # The dataset reads its rows by the schema it was written with. A changed schema file may
+    # rename or redescribe it; changing how it reads rows needs a new id.
+    schema_file = folder / "stations.yaml"
+    schema_file.write_text(STATION_SCHEMA.replace("Rainfall over", "Rain over"), encoding="utf-8")
+    schemas.reset_schema_caches()
+    write([{"station": "S1", "day": "2026-01-03", "rainfall": 1.0}])
+    assert "| `rainfall` | double | mm | Rain over the day. |" in client.get("/stac/stations/README.md").text
+    schema_file.write_text(STATION_SCHEMA.replace("name: rainfall", "name: precipitation"), encoding="utf-8")
+    schemas.reset_schema_caches()
+    with pytest.raises(ValueError, match="'station_daily' has changed its columns or key since table dataset"):
+        write([{"station": "S1", "day": "2026-01-04", "precipitation": 1.0}])
+    rows = client.get("/tables/stations/rows").json()["items"]
+    assert [row["rainfall"] for row in rows] == [None, 4.0, 1.0]
+
+    # A feature column named as the latest values name a period does not confuse them.
     store.write_rows(
         dataset_id="district_days",
         collection_id="districts",
-        rows=[{"day_max": "D1", "day": "2026-01-01", "value": 4.0}],
+        rows=[{"_newest": "D1", "day": "2026-01-01", "value": 4.0}],
         schema="district_daily",
         period_type="daily",
     )

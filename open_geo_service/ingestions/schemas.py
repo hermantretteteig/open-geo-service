@@ -549,9 +549,12 @@ class ArtifactRecord(BaseModel):
             "collection, whose units come from its template."
         ),
     )
-    table_schema: str | None = Field(
+    table_schema: dict[str, Any] | None = Field(
         default=None,
-        description="Id of a table dataset's schema (`tables.schemas`). None for a raster or a feature collection.",
+        description=(
+            "Declaration of the schema a table dataset's rows were written with (`tables.schemas`), so "
+            "an edited schema file cannot change how they read. None for a raster or a feature collection."
+        ),
     )
     request_scope: ArtifactRequestScope
     coverage: ArtifactCoverage
