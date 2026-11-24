@@ -17,6 +17,7 @@ from xarray.backends.zarr import FillValueCoder
 from open_geo_service import config as api_config
 from open_geo_service.shared.crs import store_crs_attrs
 from open_geo_service.shared.geozarr import check_grid_description, grid_geometry, write_gdal_geotransform
+from open_geo_service.shared.provisional import FETCHED_AT
 from open_geo_service.shared.raster_contract import prepare_for_publication
 
 logger = logging.getLogger(__name__)
@@ -376,8 +377,6 @@ class _PyramidLevels:
         The first sync of such a store gives level 0 the array (NaT for its earlier periods); the
         coarser levels get the same values here, rather than a rebuild of the whole pyramid.
         """
-        from open_geo_service.shared.provisional import FETCHED_AT
-
         if FETCHED_AT not in self.base:
             return
         source = cast(zarr.Array, self.base[FETCHED_AT])
@@ -645,54 +644,56 @@ def needs_pyramid(ds: xr.Dataset) -> bool:
 
 
 def ensure_time_coordinate_chunking(store_path: Path, time_dim: str) -> bool:
-    """Re-chunk an existing Icechunk store's 1-D time coordinate to a bounded chunk size.
+    """Re-chunk an existing Icechunk store's 1-D time coordinates to a bounded chunk size.
 
     Streaming ingests append one period at a time, which leaves the ``time_dim`` coordinate
     chunked at size 1. A browser map client reads the whole time axis to drive its step
     control, so a chunk-per-timestep coordinate means one tiny HTTP request per step — tens
     of thousands of them for a multi-year daily store, dominating load/step latency. Rewrite
-    only the coordinate array to ``<= _ROOT_TIME_COORD_MAX_CHUNK`` values per chunk (the data
+    only the coordinate arrays to ``<= _ROOT_TIME_COORD_MAX_CHUNK`` values per chunk (the data
     variables, chunked at one timestep for independent per-step reads, are left untouched).
+    ``fetched_at`` is chunked as ``time_dim``: every sync reads all of it to plan refreshes.
 
     Surgical and transactional (Icechunk commit-or-nothing), and idempotent — a no-op when
-    the coordinate is already coarse enough. Returns True if it re-chunked.
+    the coordinates are already coarse enough. Returns True if it re-chunked.
     """
     import icechunk
 
     repo = icechunk.Repository.open(icechunk.local_filesystem_storage(str(store_path)))
     read_group = zarr.open_group(repo.readonly_session("main").store, mode="r")
-    if time_dim not in read_group:
-        return False
-    coord = read_group[time_dim]
-    if not isinstance(coord, zarr.Array) or coord.ndim != 1:
-        return False
-    n = int(coord.shape[0])
-    target = min(n, _ROOT_TIME_COORD_MAX_CHUNK)
-    if int(coord.chunks[0]) >= target:
+    fine: list[zarr.Array] = []
+    for name in (time_dim, FETCHED_AT):
+        coord = read_group.get(name)
+        if not isinstance(coord, zarr.Array) or coord.ndim != 1:
+            continue
+        if int(coord.chunks[0]) < min(int(coord.shape[0]), _ROOT_TIME_COORD_MAX_CHUNK):
+            fine.append(coord)
+    if not fine:
         return False  # already coarse enough
-
-    values = coord[:]
-    attrs = dict(coord.attrs)
-    attrs.pop("_ChunkSizes", None)  # stale netCDF per-chunk hint from the source
-    dtype = coord.dtype
-    fill_value = coord.fill_value
 
     session = repo.writable_session("main")
     write_group = zarr.open_group(session.store, mode="r+")
-    del write_group[time_dim]
-    new_coord = write_group.create_array(
-        time_dim,
-        shape=(n,),
-        chunks=(target,),
-        dtype=dtype,
-        fill_value=fill_value,
-        dimension_names=(time_dim,),
-    )
-    new_coord[:] = values
-    for key, value in attrs.items():
-        new_coord.attrs[key] = value
-    session.commit(f"Re-chunk '{time_dim}' coordinate to <= {target}/chunk for browser-friendly axis reads")
-    logger.info("Re-chunked '%s' coordinate of '%s' from 1 to %d values/chunk", time_dim, store_path.name, target)
+    for coord in fine:
+        name = coord.basename
+        n = int(coord.shape[0])
+        target = min(n, _ROOT_TIME_COORD_MAX_CHUNK)
+        attrs = dict(coord.attrs)
+        attrs.pop("_ChunkSizes", None)  # stale netCDF per-chunk hint from the source
+        values = coord[:]
+        del write_group[name]
+        new_coord = write_group.create_array(
+            name,
+            shape=(n,),
+            chunks=(target,),
+            dtype=coord.dtype,
+            fill_value=coord.fill_value,
+            dimension_names=(time_dim,),
+        )
+        new_coord[:] = values
+        new_coord.attrs.update(attrs)
+        logger.info("Re-chunked '%s' of '%s' to %d values/chunk", name, store_path.name, target)
+    names = ", ".join(f"'{coord.basename}'" for coord in fine)
+    session.commit(f"Re-chunk {names} to <= {_ROOT_TIME_COORD_MAX_CHUNK}/chunk for whole-axis reads")
     return True
 
 

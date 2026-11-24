@@ -8,6 +8,7 @@ from typing import cast
 import numpy as np
 import pytest
 import xarray as xr
+import zarr
 
 from open_geo_service.data_accessor.services.accessor import open_icechunk_dataset
 from open_geo_service.ingestions import services, sync_engine
@@ -360,6 +361,10 @@ def test_a_preliminary_period_is_fetched_again_once_after_its_final_version_is_e
     )
     assert _stored(store_path) == ([101.0, 102.0, 103.0], [refreshed_at, later, later])
     assert response.dataset is not None and response.dataset.provisional_periods == []
+    # Chunked as `t`, rechunked at the end of each sync, so the refresh and the append above
+    # wrote into a chunk of several periods, and the planner reads the array in few requests.
+    root = zarr.open_group(services.open_or_create_repo(store_path).readonly_session("main").store, mode="r")
+    assert [cast(zarr.Array, root[name]).chunks for name in (FETCHED_AT, "t")] == [(3,), (3,)]
 
     # Fetched after maturity, no period is due again: each was fetched at most twice.
     assert _sync("2026-01-03").status == "up_to_date"
