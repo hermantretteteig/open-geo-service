@@ -410,7 +410,7 @@ def test_the_map_viewer_reads_a_raster_from_its_icechunk_repository(client: Test
     body = client.get("/map").text
 
     assert "const icechunk = collection.assets?.icechunk;" in body
-    assert 'await IcechunkStore.open(icechunk.href, { branch: "main" })' in body
+    assert 'await IcechunkStore.open(icechunk.href, { branch: "published" })' in body
     assert "assets?.zarr" not in body and "source:" not in body
 
 

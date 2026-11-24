@@ -799,8 +799,8 @@
 
         try {
           // Opening reads `repo`, the snapshot and a manifest; a newer dataset may be chosen
-          // meanwhile. The branch is `main` until rasters are published by branch (CLIM-1328).
-          const store = await IcechunkStore.open(icechunk.href, { branch: "main" });
+          // meanwhile. `published` is what GeoService serves; `main` can hold a sync in progress.
+          const store = await IcechunkStore.open(icechunk.href, { branch: "published" });
           if (superseded()) return;
           activeLayer = new ZarrLayer({
             id: "zarr-layer",
