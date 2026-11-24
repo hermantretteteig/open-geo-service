@@ -138,6 +138,20 @@ def test_an_overwrite_moves_readers_to_the_new_version_in_one_step(
     services.publish_artifact_record(replaced.artifact_id, snapshot_id=before)
     assert _read(store["path"]) == (3, 1.0)
 
+    # The startup backfill measures the version readers are served, not `main`.
+    def unmeasured(records: list[services.ArtifactRecord]) -> None:
+        records[0] = records[0].model_copy(update={"statistics": None})
+
+    services._mutate_records(unmeasured)
+    assert services.measure_missing_statistics() == 1
+    measured = services.list_artifacts().items[0].statistics
+    assert measured is not None and measured.max == 1.0
+
+    # The next sync publishes `main` again, though the rollback left the coverage as it was.
+    synced = _ingest(store, overwrite=False)
+    assert _read(store["path"]) == (3, 2.0)
+    assert synced.statistics == replaced.statistics
+
 
 def test_a_sync_that_fails_part_way_is_not_a_version_to_roll_back_to(store: dict[str, Any]) -> None:
     record = _ingest(store, overwrite=False, end=DAYS[0], publish=True)
@@ -233,13 +247,23 @@ def test_the_published_branch_decides_what_readers_see(store: dict[str, Any], mo
 def test_startup_brings_branch_and_record_into_step(store: dict[str, Any]) -> None:
     # A store from before the branch: published record, no branch, and a tip not marked
     # complete, which publishing marks, so a rollback may return to what readers are served.
+    # Its record is behind `main`, as a sync that failed part way left it.
     record = _ingest(store, overwrite=False, end=DAYS[1], publish=True)
     _repo(store["path"]).writable_session("main").commit("unmarked", allow_empty=True)
     _repo(store["path"]).delete_branch("published")
+
+    def behind(records: list[services.ArtifactRecord]) -> None:
+        temporal = records[0].coverage.temporal.model_copy(update={"end": DAYS[0]})
+        records[0] = records[0].model_copy(
+            update={"coverage": records[0].coverage.model_copy(update={"temporal": temporal})}
+        )
+
+    services._mutate_records(behind)
     assert services.reconcile_published_branches() == 1
     tip = next(iter(_repo(store["path"]).ancestry(branch="main")))
     assert _published(store["path"]) == str(tip.id) and tip.metadata.get("ogs_complete")
     record = services.list_artifacts().items[0]
+    assert record.coverage.temporal.end == DAYS[1], "the record describes what readers are served"
 
     # A crash between moving the branch and writing the record: the record follows the branch.
     def unpublish(records: list[services.ArtifactRecord]) -> None:

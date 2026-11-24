@@ -1309,6 +1309,8 @@ def _create_streaming_artifact(
     # whether it amended earlier ones away, which leaves data for a collection.
     wrote_this_run = False
     amended_periods = False
+    # Set when a sync finds `published` rolled back behind `main`, which it publishes again.
+    undoing_rollback = False
     store_committed = False
     plugin_handed_to_orchestrator = False
     ingest_completed = False
@@ -1348,15 +1350,17 @@ def _create_streaming_artifact(
                     or str(dataset["period_type"]) == "climatology"
                     or (temporal.start == plan.start and temporal.end == plan.end)
                 )
-                if coverage_is_current:
+                undoing_rollback = _rolled_back(store_path)
+                if coverage_is_current and not undoing_rollback:
                     if publish and existing.publication.status != PublicationStatus.PUBLISHED:
                         return publish_artifact_record(existing.artifact_id)
                     return existing
                 logger.warning(
-                    "Re-registering committed store '%s' because artifact coverage %s..%s is stale",
+                    "Re-registering committed store '%s' because %s",
                     store_path,
-                    temporal.start,
-                    temporal.end,
+                    "it was rolled back"
+                    if coverage_is_current
+                    else f"coverage {temporal.start}..{temporal.end} is stale",
                 )
         if plan.action != SyncAction.NO_OP and on_update_planned is not None:
             on_update_planned(_previous_coverage_end(dataset, plan))
@@ -1500,10 +1504,8 @@ def _create_streaming_artifact(
             created_at=datetime.now(UTC),
             publication=ArtifactPublication(),
         )
-        stored_record = _upsert_artifact_record(
-            record,
-            overwrite=overwrite,
-        )
+        # Replacing the rolled-back record, which may have the same coverage but describes the older version.
+        stored_record = _upsert_artifact_record(record, overwrite=overwrite or undoing_rollback)
         store_committed = True
         if published_before is not None:
             # The branch moved above, so the record follows it.
@@ -2023,6 +2025,15 @@ def publish_artifact_record(artifact_id: str, snapshot_id: str | None = None) ->
     return _record_publication(record)
 
 
+def _rolled_back(store_path: Path) -> bool:
+    """Whether `published` holds an older version than the tip of `main`, as after a rollback."""
+    if not (store_path / "repo").exists():
+        return False
+    repo = open_or_create_repo(store_path)
+    published = published_snapshot(repo)
+    return published is not None and published != str(repo.lookup_branch("main"))
+
+
 def _describing_published(record: ArtifactRecord, store_path: Path) -> ArtifactRecord:
     """*record* with the coverage and statistics of the version `published` holds."""
     coverage = get_data_coverage_for_paths(
@@ -2090,8 +2101,8 @@ def reconcile_published_branches() -> int:
             published = newest.publication.status == PublicationStatus.PUBLISHED
             if tip is None and any(r.publication.status == PublicationStatus.PUBLISHED for r in records):
                 publish_snapshot(store_path)
-                if published:
-                    _record_publication(newest)
+                # Its tip may hold more than the record describes, such as periods a failed sync kept.
+                _record_publication(_describing_published(newest, store_path))
             elif tip is not None and not published:
                 _record_publication(newest)
             elif tip is not None and newest.publication.snapshot_id != tip:
@@ -2786,7 +2797,11 @@ def measure_missing_statistics(should_stop: Callable[[], bool] = lambda: False) 
         if not slots.acquire(should_stop):
             break
         try:
-            statistics = measure_statistics(record.path, record.variable)
+            # A published record describes `published`, which a rollback leaves behind `main`.
+            published = record.publication.status == PublicationStatus.PUBLISHED
+            statistics = measure_statistics(
+                record.path, record.variable, branch=PUBLISHED_BRANCH if published else "main"
+            )
         finally:
             slots.release()
         if statistics is not None and _fill_statistics(record, statistics):

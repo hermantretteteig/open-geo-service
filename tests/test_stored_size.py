@@ -333,7 +333,7 @@ def test_the_backfill_keeps_statistics_a_sync_recorded_while_it_measured(
     record = _published_without_statistics(tmp_path, monkeypatch)
     synced = ArtifactStatistics(**dict.fromkeys(ArtifactStatistics.model_fields, 99.0))
 
-    def measure_while_a_sync_lands(store_path: object, variable: str) -> ArtifactStatistics:
+    def measure_while_a_sync_lands(store_path: object, variable: str, branch: str = "main") -> ArtifactStatistics:
         def sync(records: list[Any]) -> None:
             for index, stored in enumerate(records):
                 records[index] = stored.model_copy(update={"statistics": synced})
