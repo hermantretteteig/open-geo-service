@@ -41,7 +41,6 @@ from open_geo_service.streaming.protocol import (
 )
 from open_geo_service.streaming.store import (
     committed_data_group,
-    expire_replaced_snapshots,
     is_store_empty,
     open_or_create_repo,
     read_committed_period_ids,
@@ -367,16 +366,6 @@ async def run_streaming_ingest(
         if tasks_to_cancel:
             await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
         close_ingestion_plugin(plugin)
-
-    # Versions older than the retention setting leave the history; a collection frees their data
-    # later. Every branch keeps its tip, so `main`, `published` and an ingest's rollback branch
-    # all survive.
-    try:
-        expired = expire_replaced_snapshots(open_or_create_repo(store_path))
-        if expired:
-            logger.info("Expired %d snapshots older than the retention setting from %s", len(expired), store_path)
-    except Exception:
-        logger.warning("expire_snapshots failed for %s — store remains valid", store_path, exc_info=True)
 
     return StreamingIngestResult(store_path=store_path, period_type=period_type, periods_written=written)
 

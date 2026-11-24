@@ -867,10 +867,16 @@ and GeoService's own pages read `main` for it.
   started after a crash between the two marks the record to match the branch, and gives a store
   from before the branch existed one at the tip of `main`.
 
-**Versions and rollback.** Each sync leaves one snapshot in the history of `main`, and the snapshots of the last
-`snapshot_retention_days` (default 30, see the [instance guide](instance_guide.md)) are kept,
-also across an overwrite. Older ones are expired at the next update of the store. A dataset can
-be rolled back to any kept snapshot by publishing it again, on the host:
+**Versions and rollback.** Each sync leaves one snapshot in the history of `main`: its periods,
+pyramid levels and other normalization in one commit, marked complete once the sync has finished.
+The snapshots of the last `snapshot_retention_days` (default 30, see the
+[instance guide](instance_guide.md)) are kept, also across an overwrite, and older ones are
+expired at the next update of the store. A sync that fails part way leaves its periods on `main`
+for the retry, unmarked.
+
+A dataset can be rolled back to any kept, complete version by publishing it again. It writes to
+the store, so it runs in the writer: stop the server first, and pause the dataset's schedule if
+the rollback has to outlast the next sync. Then, on the host:
 
 ```python
 from open_geo_service.ingestions.services import get_latest_artifact_for_dataset_or_404, publish_artifact_record
@@ -880,10 +886,13 @@ publish_artifact_record(record.artifact_id, snapshot_id="<snapshot id>")
 ```
 
 The record then describes that version, its coverage and statistics, while `main` keeps the
-newer ones, so the next sync finds the record behind the store and publishes `main` again. A
-snapshot that is not a kept version of the store is refused, and so is the store's empty first
-snapshot. Every other kept snapshot is a whole version: a sync's pyramid levels and other
-normalization are folded into the snapshot that wrote its periods.
+newer ones, so the next sync finds the record behind the store and publishes `main` again. The
+thumbnail and the size still describe the store as a whole, and no update event is sent. A
+snapshot that is not a complete, kept version of the store is refused.
+
+**Size.** A raster's recorded size is what Icechunk reports for the chunks any branch reaches,
+so it includes the versions kept for the retention period: a daily dataset grows by about a
+retention period's worth of syncs compared with keeping only the latest version.
 
 **Collection.** A rolled-back append, an abandoned replacement and an expired snapshot leave data that no branch
 reaches, and Icechunk keeps it until collected. Only data that no branch or tag reaches is

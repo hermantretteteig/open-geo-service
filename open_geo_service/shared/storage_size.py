@@ -8,8 +8,11 @@ page from seconds to many minutes.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def stored_bytes(path: str | Path) -> int:
@@ -31,7 +34,7 @@ def stored_bytes(path: str | Path) -> int:
             repo = icechunk.Repository.open(icechunk.local_filesystem_storage(str(root)))
             return int(repo.chunk_storage_stats().non_virtual_bytes())
         except Exception:
-            return 0
+            logger.warning("Could not read the size of '%s' from Icechunk; measuring its files", root, exc_info=True)
     try:
         if not root.is_dir():
             return root.stat().st_size if root.is_file() else 0

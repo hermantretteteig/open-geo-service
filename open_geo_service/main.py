@@ -194,6 +194,7 @@ async def _services() -> AsyncGenerator[None]:
     from open_geo_service.notifications import webhook
 
     webhook.webhook_url()  # a malformed notifications block refuses startup
+    api_config.get_snapshot_retention()  # so does a malformed retention, which would stop cleanup
     # After plugins load, so a recipe is checked against the workflows it will run.
     derivations.validate_recipes()
     maintenance: asyncio.Task[None] | None = None
