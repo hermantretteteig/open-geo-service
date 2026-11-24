@@ -22,10 +22,14 @@ icechunk = pytest.importorskip("icechunk")
 pytest.importorskip("topozarr")
 zarr = pytest.importorskip("zarr")
 
+from fastapi import HTTPException  # noqa: E402
+
+from open_geo_service import config as api_config  # noqa: E402
 from open_geo_service import writer_lease  # noqa: E402
 from open_geo_service.data_accessor.services.accessor import open_icechunk_dataset  # noqa: E402
 from open_geo_service.data_manager.services import downloader  # noqa: E402
 from open_geo_service.ingestions import services  # noqa: E402
+from open_geo_service.ingestions.schemas import PublicationStatus  # noqa: E402
 from open_geo_service.streaming import BaseDatasetPlugin, normalize_period  # noqa: E402
 
 NY, NX = 101, 75
@@ -69,7 +73,9 @@ def store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     return state
 
 
-def _ingest(state: dict[str, Any], *, overwrite: bool, end: str = DAYS[-1]) -> services.ArtifactRecord:
+def _ingest(
+    state: dict[str, Any], *, overwrite: bool, end: str = DAYS[-1], publish: bool = False
+) -> services.ArtifactRecord:
     return services.create_artifact(
         dataset={
             "id": "tg_daily",
@@ -83,18 +89,29 @@ def _ingest(state: dict[str, Any], *, overwrite: bool, end: str = DAYS[-1]) -> s
         bbox=[1.0, 2.0, 3.0, 4.0],
         country_code=None,
         overwrite=overwrite,
-        publish=False,
+        publish=publish,
     )
 
 
 def _read(path: Path) -> tuple[int, float]:
-    """What a reader of `main` sees: the number of periods and the value they hold."""
+    """What a reader sees: the number of periods and the value they hold."""
     with open_icechunk_dataset(path) as ds:
         return int(ds.sizes["t"]), float(ds["tg"].mean())
 
 
+def _repo(path: Path) -> Any:
+    return icechunk.Repository.open(icechunk.local_filesystem_storage(str(path)))
+
+
 def _branches(path: Path) -> set[str]:
-    return set(icechunk.Repository.open(icechunk.local_filesystem_storage(str(path))).list_branches())
+    return set(_repo(path).list_branches())
+
+
+def _published(path: Path) -> str | None:
+    try:
+        return str(_repo(path).lookup_branch("published"))
+    except icechunk.RefNotFoundError:
+        return None
 
 
 @pytest.mark.parametrize("pyramid", [False, True])
@@ -103,7 +120,8 @@ def test_an_overwrite_moves_readers_to_the_new_version_in_one_step(
 ) -> None:
     if pyramid:
         _use_pyramids(monkeypatch)
-    _ingest(store, overwrite=False)
+    _ingest(store, overwrite=False, publish=True)
+    before = _published(store["path"])
     reader = open_icechunk_dataset(store["path"])
 
     store["plugin"] = _ValuePlugin(2.0)
@@ -112,12 +130,27 @@ def test_an_overwrite_moves_readers_to_the_new_version_in_one_step(
     assert _read(store["path"]) == (3, 2.0)
     assert float(reader["tg"].mean()) == 1.0, "a reader keeps the version it opened"
     reader.close()
-    assert _branches(store["path"]) == {"main"}
-    # Nothing beside the store but the note that the replaced version is due for collection.
+    assert _branches(store["path"]) == {"main", "published"}
+    # Nothing beside the store but the note that unreachable data is due for collection.
     assert sorted(p.name for p in store["path"].parent.iterdir()) == ["tg.icechunk", "tg.icechunk.gc-pending"]
 
-    # Kept for readers until the retention window passes, then freed, and the size follows.
+    # The replaced version is kept for the retention period, so the dataset can be rolled back.
+    services.publish_artifact_record(replaced.artifact_id, snapshot_id=before)
+    assert _read(store["path"]) == (3, 1.0)
+
+
+def test_retention_zero_keeps_only_the_current_version(store: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(services, "_GC_RETENTION", timedelta(0))
+    monkeypatch.setattr(api_config, "get_snapshot_retention", lambda: timedelta(0))
+    _ingest(store, overwrite=False, publish=True)
+    before = _published(store["path"])
+    store["plugin"] = _ValuePlugin(2.0)
+    replaced = _ingest(store, overwrite=True)
+
+    with pytest.raises(HTTPException) as refused:
+        services.publish_artifact_record(replaced.artifact_id, snapshot_id=before)
+    assert refused.value.status_code == 404
+    # Freed by the pending collection, and the recorded size follows.
     assert services.collect_pending_garbage(store["path"])
     (collected,) = services.list_artifacts().items
     assert collected.size_bytes is not None and replaced.size_bytes is not None
@@ -134,12 +167,56 @@ def test_an_overwrite_moves_readers_to_the_new_version_in_one_step(
     assert overwritten.size_bytes == services.stored_bytes(store["path"])
 
 
+def test_the_published_branch_decides_what_readers_see(store: dict[str, Any]) -> None:
+    unpublished = _ingest(store, overwrite=False, end=DAYS[1])
+    assert _published(store["path"]) is None, "an unpublished raster has no published branch"
+    assert unpublished.publication.status == PublicationStatus.UNPUBLISHED
+
+    published = _ingest(store, overwrite=False, end=DAYS[1], publish=True)
+    assert published.publication.status == PublicationStatus.PUBLISHED
+    first = _published(store["path"])
+    assert first == str(_repo(store["path"]).lookup_branch("main"))
+
+    synced = _ingest(store, overwrite=False)  # a sync of a published raster moves its branch
+    assert synced.publication.status == PublicationStatus.PUBLISHED
+    assert _published(store["path"]) == str(_repo(store["path"]).lookup_branch("main")) != first
+    assert _read(store["path"]) == (3, 1.0)
+    # One snapshot per sync, however many periods it wrote; the earlier one is kept.
+    messages = [snapshot.message for snapshot in _repo(store["path"]).ancestry(branch="main")]
+    assert sum(message.startswith("ingest: ") for message in messages) == 2
+
+    services.publish_artifact_record(synced.artifact_id, snapshot_id=first)  # a rollback
+    assert _read(store["path"]) == (2, 1.0)
+    with pytest.raises(HTTPException) as unknown:
+        services.publish_artifact_record(synced.artifact_id, snapshot_id="0" * 20)
+    assert unknown.value.status_code == 404
+
+
+def test_startup_brings_branch_and_record_into_step(store: dict[str, Any]) -> None:
+    # A store from before the branch: published record, no branch.
+    record = _ingest(store, overwrite=False, publish=True)
+    _repo(store["path"]).delete_branch("published")
+    assert services.reconcile_published_branches() == 1
+    assert _published(store["path"]) == str(_repo(store["path"]).lookup_branch("main"))
+
+    # A crash between moving the branch and writing the record: the record follows the branch.
+    def unpublish(records: list[services.ArtifactRecord]) -> None:
+        records[0] = record.model_copy(update={"publication": services.ArtifactPublication()})
+
+    services._mutate_records(unpublish)
+    assert services.reconcile_published_branches() == 1
+    (followed,) = services.list_artifacts().items
+    assert followed.publication.status == PublicationStatus.PUBLISHED
+    assert services.reconcile_published_branches() == 0
+
+
 @pytest.mark.parametrize("failure", ["fetch", "normalization", "record"])
 def test_a_failed_overwrite_leaves_readers_on_the_version_they_had(
     store: dict[str, Any], monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     _use_pyramids(monkeypatch)
-    _ingest(store, overwrite=False)
+    _ingest(store, overwrite=False, publish=True)
+    published = _published(store["path"])
 
     store["plugin"] = _ValuePlugin(2.0, fail_at=DAYS[1] if failure == "fetch" else None)
     if failure == "normalization":
@@ -150,7 +227,8 @@ def test_a_failed_overwrite_leaves_readers_on_the_version_they_had(
         _ingest(store, overwrite=True)
 
     assert _read(store["path"]) == (3, 1.0)
-    assert _branches(store["path"]) == {"main"}
+    assert _published(store["path"]) == published
+    assert _branches(store["path"]) == {"main", "published"}
     lock = services._acquire_store_lock(store["path"])
     assert lock.acquire(blocking=False), "the next ingest is not refused"
     lock.release()

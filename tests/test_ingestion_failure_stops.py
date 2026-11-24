@@ -72,31 +72,42 @@ def _committed_messages(store_path: Path) -> list[str]:
     return [snapshot.message for snapshot in repo.ancestry(branch="main")]
 
 
+def _conflict_on_the_third_period(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Fail the commit of a run's third period as a concurrent writer would; return the messages seen."""
+    commits: list[str] = []
+    for name in ("commit", "amend"):
+        original = getattr(icechunk.Session, name)
+
+        def conflicting(
+            self: icechunk.Session, message: str, *args: Any, _original: Any = original, **kwargs: Any
+        ) -> Any:
+            commits.append(message)
+            if message.endswith("2026-01-03"):
+                raise icechunk.ConflictError("simulated concurrent writer")
+            return _original(self, message, *args, **kwargs)
+
+        monkeypatch.setattr(icechunk.Session, name, conflicting)
+    return commits
+
+
 def test_commit_conflict_stops_the_loop_and_releases_the_lock(
     ingestion: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    commits: list[str] = []
-    original = icechunk.Session.commit
-
-    def conflicting_commit(self: icechunk.Session, message: str, *args: Any, **kwargs: Any) -> Any:
-        commits.append(message)
-        if message == "ingest: 2026-01-03":
-            raise icechunk.ConflictError("simulated concurrent writer")
-        return original(self, message, *args, **kwargs)
-
-    monkeypatch.setattr(icechunk.Session, "commit", conflicting_commit)
+    original_commit, original_amend = icechunk.Session.commit, icechunk.Session.amend
+    commits = _conflict_on_the_third_period(monkeypatch)
 
     with pytest.raises(Exception, match="simulated concurrent writer"):
         _create(ingestion)
 
-    # Nothing is fetched or committed after the failing period.
-    assert commits == ["ingest: 2026-01-01", "ingest: 2026-01-02", "ingest: 2026-01-03"]
+    # Nothing is fetched or committed after the failing period; the run is one commit, amended.
+    assert commits == ["ingest: 2026-01-01", "ingest: 2026-01-01 to 2026-01-02", "ingest: 2026-01-01 to 2026-01-03"]
     assert "2026-01-05" not in ingestion["plugin"].fetched
     # The lock is free: another ingestion can start at once and resume from the committed prefix.
     lock = services._acquire_store_lock(ingestion["store_path"])
     assert lock.acquire(blocking=False)
     lock.release()
-    monkeypatch.setattr(icechunk.Session, "commit", original)
+    monkeypatch.setattr(icechunk.Session, "commit", original_commit)
+    monkeypatch.setattr(icechunk.Session, "amend", original_amend)
     artifact = _create(ingestion)
     assert (artifact.coverage.temporal.start, artifact.coverage.temporal.end) == ("2026-01-01", "2026-01-06")
 
@@ -234,14 +245,8 @@ def test_failed_job_exposes_failure_only_after_its_lock_is_free(
 
     monkeypatch.setattr(registry_datasets, "get_dataset", lambda _: ingestion["dataset"])
     monkeypatch.setattr(extent_services, "get_extent_or_404", lambda: {"bbox": [1.0, 2.0, 3.0, 4.0]})
-    original_commit = icechunk.Session.commit
-
-    def conflicting_commit(self: icechunk.Session, message: str, *args: Any, **kwargs: Any) -> Any:
-        if message == "ingest: 2026-01-03":
-            raise icechunk.ConflictError("simulated concurrent writer")
-        return original_commit(self, message, *args, **kwargs)
-
-    monkeypatch.setattr(icechunk.Session, "commit", conflicting_commit)
+    original_commit, original_amend = icechunk.Session.commit, icechunk.Session.amend
+    _conflict_on_the_third_period(monkeypatch)
     lock_free_when_failed: list[bool] = []
     probed = threading.Event()
     original_mutate = native_store.mutate_job_record
@@ -269,6 +274,7 @@ def test_failed_job_exposes_failure_only_after_its_lock_is_free(
     assert "2026-01-05" not in ingestion["plugin"].fetched
     # A new ingestion starts at once and completes the dataset.
     monkeypatch.setattr(icechunk.Session, "commit", original_commit)
+    monkeypatch.setattr(icechunk.Session, "amend", original_amend)
     retried = _await(jobs, jobs.submit_callable_job(**_ingestion_job()).job_id)
     assert retried.status == JobStatus.SUCCESSFUL, retried.error
 

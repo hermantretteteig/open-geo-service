@@ -245,7 +245,7 @@ def serve_icechunk_store_file(dataset_id: str, file_path: str) -> FileResponse:
         import icechunk, zarr
 
         repo = icechunk.Repository.open(icechunk.http_storage("http://<host>/icechunk/<dataset_id>/"))
-        ds = zarr.open(repo.readonly_session("main").store, zarr_format=3)
+        ds = zarr.open(repo.readonly_session("published").store, zarr_format=3)
     """
     return services.serve_icechunk_file(dataset_id, file_path)
 

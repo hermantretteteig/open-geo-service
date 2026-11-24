@@ -272,8 +272,11 @@ SDK usage:
 import icechunk, xarray as xr
 
 repo = icechunk.Repository.open(icechunk.http_storage("https://host/icechunk/era5land_precipitation_daily"))
-ds = xr.open_zarr(repo.readonly_session("main").store, zarr_format=3, consolidated=False)
+ds = xr.open_zarr(repo.readonly_session("published").store, zarr_format=3, consolidated=False)
 ```
+
+Open the `published` branch: writers commit to `main`, and a dataset's readers see a version only
+once it is published (see [the managed data API guide](managed_data_api_guide.md), under versions and rollback).
 
 Both endpoints are advertised as assets in the STAC collection so clients can choose the appropriate one. Use `/zarr` for web maps and standard xarray workflows; use `/icechunk` when you need versioning or SDK-level access.
 

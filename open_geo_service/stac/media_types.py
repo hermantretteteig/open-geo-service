@@ -108,8 +108,10 @@ def _read_icechunk_root_attributes(store_path: str) -> Mapping[str, Any]:
     if not Path(store_path).exists():
         return {}
     storage = icechunk.local_filesystem_storage(store_path)
+    from open_geo_service.streaming.store import read_snapshot
+
     repo = icechunk.Repository.open(storage)
-    session = repo.readonly_session("main")
+    session = repo.readonly_session(snapshot_id=read_snapshot(repo))
     group = zarr.open_group(session.store, mode="r")
     return dict(group.attrs)
 

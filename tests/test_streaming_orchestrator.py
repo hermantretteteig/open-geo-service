@@ -91,6 +91,9 @@ class _FakeSession:
     def commit(self, message: str) -> None:
         self.messages.append(message)
 
+    def amend(self, message: str) -> None:
+        self.messages.append(message)
+
 
 class _FakeRepo:
     def __init__(self, store: str) -> None:

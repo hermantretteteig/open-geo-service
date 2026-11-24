@@ -37,6 +37,64 @@ def open_or_create_repo(store_path: Path) -> Any:
     return icechunk.Repository.create(storage)
 
 
+# The branch readers open. Writers commit to `main`; publishing moves this one (docs/managed_data_api_guide.md).
+PUBLISHED_BRANCH = "published"
+
+
+def read_snapshot(repo: Any) -> str:
+    """The snapshot readers see: the tip of `published`, or of `main` for a store not published yet."""
+    import icechunk
+
+    try:
+        return str(repo.lookup_branch(PUBLISHED_BRANCH))
+    except icechunk.RefNotFoundError:
+        return str(repo.lookup_branch("main"))
+
+
+def published_snapshot(repo: Any) -> str | None:
+    """The tip of `published`, or None when the store has not been published."""
+    import icechunk
+
+    try:
+        return str(repo.lookup_branch(PUBLISHED_BRANCH))
+    except icechunk.RefNotFoundError:
+        return None
+
+
+def publish_snapshot(store_path: Path, snapshot_id: str | None = None) -> str | None:
+    """Move `published` to *snapshot_id*, or to the tip of `main`; return where it was, or None.
+
+    Creates the branch the first time. An older *snapshot_id* rolls the store back; it must be
+    in the history of `main` that retention has kept. The move is conditional on the branch being
+    where it was read, so a move this process did not expect fails instead of being overwritten.
+    """
+    from open_geo_service import writer_lease
+
+    writer_lease.ensure_held()
+    repo = open_or_create_repo(store_path)
+    if snapshot_id is None:
+        target = str(repo.lookup_branch("main"))
+    elif any(str(snapshot.id) == snapshot_id for snapshot in repo.ancestry(branch="main")):
+        target = snapshot_id
+    else:
+        raise ValueError(f"Snapshot '{snapshot_id}' is not a kept version of {store_path.name}")
+    current = published_snapshot(repo)
+    if current is None:
+        repo.create_branch(PUBLISHED_BRANCH, target)
+    elif current != target:
+        repo.reset_branch(PUBLISHED_BRANCH, target, from_snapshot_id=current)
+    return current
+
+
+def expire_replaced_snapshots(repo: Any) -> set[str]:
+    """Expire the snapshots older than the retention setting; every branch keeps its tip."""
+    from datetime import UTC, datetime
+
+    from open_geo_service import config as api_config
+
+    return set(repo.expire_snapshots(older_than=datetime.now(UTC) - api_config.get_snapshot_retention()))
+
+
 def committed_data_group(store_path: Path, *, branch: str = "main") -> str | None:
     """Return the group holding the committed data variables: ``"0"``, or ``None`` for the root.
 
