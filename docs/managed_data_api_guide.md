@@ -859,8 +859,10 @@ no branch or tag reaches is removed, so every version still reachable is kept, i
 one published before a failed attempt.
 
 Data committed in the last hour is kept as well. Readers take no lock, so a client that opened
-the dataset before an update, or during a failed attempt, may be reading a version that is no
-longer on `main`; the hour lets it finish. It is a window, not a guarantee: a client still reading such an interim version more
+the dataset during a failed attempt may be reading one of its interim versions; the hour lets it
+finish. The hour counts from when data was written, not from when it was replaced: a version
+older than that, replaced by an overwrite or a pyramid rebuild, is freed at once, and a client
+still reading it, such as a long-running job, fails and has to reopen the dataset. It is a window, not a guarantee: a client still reading such an interim version more
 than an hour after it was committed can fail with "object not found", and has to reopen the
 dataset. Clients that opened the dataset before the attempt, or after the rollback, are not
 affected.

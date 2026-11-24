@@ -1860,6 +1860,8 @@ def test_maybe_build_pyramid_falls_back_on_build_error(tmp_path: Path, monkeypat
 
     assert result.completed is False
     assert result.rewritten is False
+    # What the failed build wrote is collected later, even if this store never updates again.
+    assert icechunk_path.with_name(f"{icechunk_path.name}.gc-pending").exists()
 
 
 def test_plan_sync_append_for_icechunk_artifact(

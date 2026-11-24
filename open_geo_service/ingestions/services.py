@@ -1583,8 +1583,10 @@ def _collect_replaced_versions(store_path: Path) -> None:
 
     A replaced or abandoned version is still in the history of `main` until its snapshots are
     expired, and only then can a collection free its data. Expiry keeps every branch's tip.
-    Anything committed within :data:`_GC_RETENTION` is kept for readers that opened it, and a
-    pending collection frees it later. Never raises.
+    Objects written within :data:`_GC_RETENTION` are kept, and a pending collection frees them
+    later. The window counts from when an object was written, not from when it was replaced, so a
+    version older than that is freed at once, also under a reader still on it; CLIM-1976 keeps
+    replaced versions for longer. Never raises.
     """
     try:
         repo = open_or_create_repo(store_path)
@@ -1782,16 +1784,21 @@ def _maybe_build_pyramid(
             return _StoreNormalizationResult(completed=True)
         # `ds` reads lazily from the version the branch held, which the commit leaves as it was.
         # Lazy rather than loaded: the whole store is 3.47 GB for Uganda's GPP. Until the old
-        # version is collected it costs disk instead, as one extra copy; a failed build leaves
-        # only uncommitted chunks, which the next collection frees.
-        downloader.write_to_icechunk_store(
-            ds,
-            store_path,
-            t_dim=t_dim,
-            pyramid_method=downloader.resampling_method_from_template(dataset),
-            commit_message="Applied GeoZarr conventions",
-            branch=branch,
-        )
+        # version is collected it costs disk instead, as one extra copy.
+        try:
+            downloader.write_to_icechunk_store(
+                ds,
+                store_path,
+                t_dim=t_dim,
+                pyramid_method=downloader.resampling_method_from_template(dataset),
+                commit_message="Applied GeoZarr conventions",
+                branch=branch,
+            )
+        except Exception:
+            # A failed build leaves the chunks it wrote, which no snapshot references. Nothing
+            # else would collect them on a first ingest, and the failure may be a full disk.
+            _mark_collection_pending(store_path)
+            raise
     except Exception:
         logger.error(
             "GeoZarr/pyramid write failed for '%s'; flat Icechunk artifact will be used as-is",
