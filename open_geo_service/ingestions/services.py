@@ -1304,6 +1304,8 @@ def _create_streaming_artifact(
     # Where `published` was before this ingest moved it, when it did.
     published_before: str | None = None
     rewritten = False
+    # Whether this ingest committed periods, which normalization then amends into one version.
+    wrote_this_run = False
     store_committed = False
     plugin_handed_to_orchestrator = False
     ingest_completed = False
@@ -1392,6 +1394,7 @@ def _create_streaming_artifact(
                 branch=ingest_branch,
             )
             ingest_completed = True
+            wrote_this_run = True
         elif plan.action != SyncAction.NO_OP:
             assert plan.start is not None and plan.end is not None
             plugin_handed_to_orchestrator = True
@@ -1413,6 +1416,7 @@ def _create_streaming_artifact(
                 replace=replacement_branch is not None,
             )
             ingest_completed = True
+            wrote_this_run = result.periods_written > 0
             if result.periods_written == 0 and (replacement_branch is not None or not store_path.exists()):
                 raise HTTPException(status_code=409, detail="Source has no data for the requested temporal scope")
 
@@ -1425,12 +1429,7 @@ def _create_streaming_artifact(
                 detail="Materialized artifact contains no data for the requested scope",
             )
 
-        _spatial_wgs84_data = coverage_data["coverage"].get("spatial_wgs84")
-        coverage = ArtifactCoverage(
-            temporal=CoverageTemporal(**coverage_data["coverage"]["temporal"]),
-            spatial=CoverageSpatial(**coverage_data["coverage"]["spatial"]),
-            spatial_wgs84=CoverageSpatial(**_spatial_wgs84_data) if _spatial_wgs84_data else None,
-        )
+        coverage = _artifact_coverage(coverage_data)
         # Temporal datasets validate against the cumulative materialization scope, not
         # the raw user request. The latter remains on the record as operation provenance.
         # A brand-new store may legitimately clamp its end to source availability; an
@@ -1451,7 +1450,7 @@ def _create_streaming_artifact(
                     ),
                 )
 
-        normalization = _maybe_build_pyramid(store_path, dataset, branch=ingest_branch)
+        normalization = _maybe_build_pyramid(store_path, dataset, branch=ingest_branch, amend=wrote_this_run)
         rewritten = normalization.rewritten
         if plan.action != SyncAction.NO_OP and plan.has_committed_periods and not normalization.completed:
             raise RuntimeError(f"Could not normalize '{dataset['id']}'; the dataset update was rolled back")
@@ -1527,13 +1526,19 @@ def _create_streaming_artifact(
                     if branch is None or (rollback_error is not None and branch == rollback_branch):
                         continue  # the rollback branch still names the version to restore by hand
                     _delete_branch(repo, branch, store_path)
-            if rollback_error is None and (rolled_back or replacement_branch is not None or rewritten):
-                # Still under the store lock, so nothing is mid-write. The version this ingest
-                # replaced, or the one it abandoned, is now reachable from no branch.
+            collected = rollback_error is None and (
+                rolled_back or replacement_branch is not None or rewritten or wrote_this_run
+            )
+            if collected:
+                # Still under the store lock, so nothing is mid-write. What this ingest replaced,
+                # amended away, expired or abandoned is now reachable from no branch.
                 _collect_replaced_versions(store_path)
-            if not store_committed and not ingest_completed and replacement_branch is None and repo is not None:
-                # A forward append that failed part way keeps the periods it committed, so a
-                # retry can resume; the store has grown, so its recorded size must follow.
+            kept_partial_append = (
+                not store_committed and not ingest_completed and replacement_branch is None and repo is not None
+            )
+            if collected or kept_partial_append:
+                # What the store keeps changed after its size was recorded: cleanup dropped the version
+                # a rollback branch held, or a forward append that failed part way kept its periods.
                 _refresh_recorded_size(store_path)
             if rollback_error is not None:
                 raise RuntimeError(
@@ -1706,8 +1711,8 @@ def collect_pending_garbage(store_path: Path) -> bool:
 
     Call with the store's write lock held. Everything the marked rollback or replacement left
     unreachable was committed before the marker's time, so a collection at least
-    :data:`_GC_RETENTION` later frees all of it; the marker is then removed, and the recorded size,
-    which counted what was freed, is measured again. Returns True when a collection ran.
+    :data:`_GC_RETENTION` later frees all of it; the marker is then removed. The recorded size
+    counts only what a branch reaches, so it does not change. Returns True when a collection ran.
     """
     marker = _collection_marker(store_path)
     try:
@@ -1725,7 +1730,6 @@ def collect_pending_garbage(store_path: Path) -> bool:
     if not collect_unreachable_objects(open_or_create_repo(store_path), store_path):
         return False
     marker.unlink(missing_ok=True)
-    _refresh_recorded_size(store_path)
     return True
 
 
@@ -1783,8 +1787,12 @@ def _maybe_build_pyramid(
     dataset: dict[str, object],
     *,
     branch: str = "main",
+    amend: bool = False,
 ) -> _StoreNormalizationResult:
     """Apply GeoZarr conventions and a multiscale pyramid to what *branch* of the Icechunk store holds.
+
+    With *amend*, each change joins the branch's last commit, the one the ingest just wrote, so
+    the sync leaves a single, complete version.
 
     Streaming ingest writes a flat store with root GeoZarr attrs but no
     ``spatial_ref`` CRS coordinate or pyramid levels. This rewrites the store via
@@ -1815,7 +1823,10 @@ def _maybe_build_pyramid(
 
     try:
         appended = downloader.append_pyramid_levels(
-            store_path, pyramid_method=downloader.resampling_method_from_template(dataset), branch=branch
+            store_path,
+            pyramid_method=downloader.resampling_method_from_template(dataset),
+            branch=branch,
+            amend=amend,
         )
     except Exception:
         # One commit, so a failure leaves the store as the ingest committed it.
@@ -1847,7 +1858,7 @@ def _maybe_build_pyramid(
             # coordinate here (cheap; data variables untouched).
             if t_dim is not None:
                 try:
-                    downloader.ensure_time_coordinate_chunking(store_path, t_dim, branch=branch)
+                    downloader.ensure_time_coordinate_chunking(store_path, t_dim, branch=branch, amend=amend)
                 except Exception:
                     logger.warning("Time-coordinate re-chunk failed for '%s'", store_path.name, exc_info=True)
             logger.info(
@@ -1871,6 +1882,7 @@ def _maybe_build_pyramid(
                 pyramid_method=downloader.resampling_method_from_template(dataset),
                 commit_message="Applied GeoZarr conventions",
                 branch=branch,
+                amend=amend,
             )
         except Exception:
             _mark_collection_pending(store_path)
@@ -1928,7 +1940,8 @@ def register_artifact_record(record: ArtifactRecord, *, publish: bool, replace_s
     records for the same store. Other callers retain request-scope overwrite semantics.
     """
     stored = _upsert_artifact_record(record, overwrite=True, replace_store=replace_store)
-    if publish and stored.publication.status != PublicationStatus.PUBLISHED:
+    # A rewrite of a published store publishes the new version too: readers follow the branch.
+    if publish or stored.publication.status == PublicationStatus.PUBLISHED:
         return publish_artifact_record(stored.artifact_id)
     return stored
 
@@ -1940,16 +1953,45 @@ def publish_artifact_record(artifact_id: str, snapshot_id: str | None = None) ->
     moves first, to the tip of `main` or to *snapshot_id*, an older version kept by retention,
     which rolls the dataset back. Readers outside GeoService see only the branch. Call while no
     ingest of the same store runs.
+
+    A rollback also describes the version it publishes on the record: its coverage and
+    statistics. `main` keeps the newer versions, so the next sync, finding the record behind
+    the store, publishes `main` again.
     """
     record = get_artifact_or_404(artifact_id)
     if record.format == ArtifactFormat.ICECHUNK and record.path:
+        store_path = Path(record.path)
         try:
-            publish_snapshot(Path(record.path), snapshot_id)
+            publish_snapshot(store_path, snapshot_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if snapshot_id is not None:
+            coverage = get_data_coverage_for_paths(
+                {"period_type": record.period_type}, icechunk_path=str(store_path), branch=PUBLISHED_BRANCH
+            )
+            record = record.model_copy(
+                update={
+                    "coverage": _artifact_coverage(coverage),
+                    "statistics": (
+                        measure_statistics(store_path, record.variable, branch=PUBLISHED_BRANCH)
+                        if record.variable
+                        else None
+                    ),
+                }
+            )
     elif snapshot_id is not None:
         raise HTTPException(status_code=409, detail=f"Artifact '{artifact_id}' has no versions to publish")
     return _record_publication(record)
+
+
+def _artifact_coverage(coverage_data: dict[str, Any]) -> ArtifactCoverage:
+    """The coverage `get_data_coverage_for_paths` reports, as a record holds it."""
+    wgs84 = coverage_data["coverage"].get("spatial_wgs84")
+    return ArtifactCoverage(
+        temporal=CoverageTemporal(**coverage_data["coverage"]["temporal"]),
+        spatial=CoverageSpatial(**coverage_data["coverage"]["spatial"]),
+        spatial_wgs84=CoverageSpatial(**wgs84) if wgs84 else None,
+    )
 
 
 def _record_publication(record: ArtifactRecord) -> ArtifactRecord:
@@ -2627,8 +2669,8 @@ def _upsert_artifact_record(
 def _refresh_recorded_size(store_path: Path) -> None:
     """Re-measure *store_path* and record it on the newest record for that path, if there is one.
 
-    For a failed append that kept its committed periods, and after a collection freed a replaced
-    version. Best-effort: a size is a figure for display, so this logs rather than raising and
+    For a failed append that kept its committed periods, and after an ingest's cleanup changed
+    which versions a branch reaches. Best-effort: a size is a figure for display, so this logs rather than raising and
     never masks the failure that led here.
     """
     try:

@@ -375,7 +375,8 @@ def write_dataset_thumbnail(
 
         # Closed as soon as the pixels are in hand, so a sync run does not leave Icechunk and
         # Zarr backend resources open behind every dataset it touches.
-        with closing(open_icechunk_dataset(store_path)) as ds:
+        # `main`: the writer renders what it just committed, before publishing it.
+        with closing(open_icechunk_dataset(store_path, branch="main")) as ds:
             variable = str(dataset.get("variable") or "")
             if variable not in ds.data_vars:
                 variable = str(next(iter(ds.data_vars), ""))

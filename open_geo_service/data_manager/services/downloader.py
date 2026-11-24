@@ -341,8 +341,12 @@ def append_pyramid_levels(
     x_dim: str = "x",
     y_dim: str = "y",
     branch: str = "main",
+    amend: bool = False,
 ) -> int | None:
     """Extend every coarser level of a pyramid store on *branch* to the periods level 0 has gained.
+
+    With *amend*, the levels join the branch's last commit instead of a commit of their own, so
+    a sync that wrote level 0 leaves one complete version.
 
     A streaming sync appends new periods to level 0 only, and rebuilding the pyramid to cover
     them rewrites every period ever stored (CLIM-1237). Each level is reduced from the level
@@ -489,7 +493,7 @@ def append_pyramid_levels(
 
     if root_times is not None:
         _write_root_time_coordinate(session.store, xr.Dataset(coords={t_dim: base_times}), time_dim=t_dim)
-    session.commit(f"Appended {appended} period(s) to every pyramid level")
+    _commit(session, f"Appended {appended} period(s) to every pyramid level", amend=amend)
     logger.info("Appended %d period(s) to the pyramid levels of '%s'", appended, store_path.name)
     return appended
 
@@ -518,7 +522,9 @@ def needs_pyramid(ds: xr.Dataset) -> bool:
     return _needs_pyramid(ds, "x", "y")
 
 
-def ensure_time_coordinate_chunking(store_path: Path, time_dim: str, *, branch: str = "main") -> bool:
+def ensure_time_coordinate_chunking(
+    store_path: Path, time_dim: str, *, branch: str = "main", amend: bool = False
+) -> bool:
     """Re-chunk an existing Icechunk store's 1-D time coordinate to a bounded chunk size.
 
     Streaming ingests append one period at a time, which leaves the ``time_dim`` coordinate
@@ -565,7 +571,9 @@ def ensure_time_coordinate_chunking(store_path: Path, time_dim: str, *, branch: 
     new_coord[:] = values
     for key, value in attrs.items():
         new_coord.attrs[key] = value
-    session.commit(f"Re-chunk '{time_dim}' coordinate to <= {target}/chunk for browser-friendly axis reads")
+    _commit(
+        session, f"Re-chunk '{time_dim}' coordinate to <= {target}/chunk for browser-friendly axis reads", amend=amend
+    )
     logger.info("Re-chunked '%s' coordinate of '%s' from 1 to %d values/chunk", time_dim, store_path.name, target)
     return True
 
@@ -582,6 +590,7 @@ def write_to_icechunk_store(
     commit_message: str = "Materialized dataset",
     before_commit: Callable[[], None] | None = None,
     branch: str = "main",
+    amend: bool = False,
 ) -> str:
     """Write *ds* to an Icechunk store, building a multiscale pyramid when needed.
 
@@ -791,4 +800,13 @@ def write_to_icechunk_store(
 
     if before_commit is not None:
         before_commit()
-    return str(session.commit(commit_message))
+    return str(_commit(session, commit_message, amend=amend))
+
+
+def _commit(session: Any, message: str, *, amend: bool) -> str:
+    """Commit *session*, or with *amend* fold it into the branch's last commit.
+
+    A sync amends its normalization into the commit that wrote its periods, so every snapshot it
+    leaves in the history is a complete version, which a rollback may publish.
+    """
+    return str(session.amend(message) if amend else session.commit(message))

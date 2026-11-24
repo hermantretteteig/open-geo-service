@@ -167,7 +167,8 @@ def test_retention_zero_keeps_only_the_current_version(store: dict[str, Any], mo
     assert overwritten.size_bytes == services.stored_bytes(store["path"])
 
 
-def test_the_published_branch_decides_what_readers_see(store: dict[str, Any]) -> None:
+def test_the_published_branch_decides_what_readers_see(store: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    _use_pyramids(monkeypatch)  # so a sync's normalization is a step of its own to fold in
     unpublished = _ingest(store, overwrite=False, end=DAYS[1])
     assert _published(store["path"]) is None, "an unpublished raster has no published branch"
     assert unpublished.publication.status == PublicationStatus.UNPUBLISHED
@@ -181,15 +182,25 @@ def test_the_published_branch_decides_what_readers_see(store: dict[str, Any]) ->
     assert synced.publication.status == PublicationStatus.PUBLISHED
     assert _published(store["path"]) == str(_repo(store["path"]).lookup_branch("main")) != first
     assert _read(store["path"]) == (3, 1.0)
-    # One snapshot per sync, however many periods it wrote; the earlier one is kept.
-    messages = [snapshot.message for snapshot in _repo(store["path"]).ancestry(branch="main")]
-    assert sum(message.startswith("ingest: ") for message in messages) == 2
+    # One whole snapshot per sync, its pyramid levels extended in the same one, above the empty
+    # first; the earlier sync's is kept. What the sync amended away is due for collection.
+    history = list(_repo(store["path"]).ancestry(branch="main"))
+    assert len(history) == 3
+    assert store["path"].with_name("tg.icechunk.gc-pending").exists()
 
-    services.publish_artifact_record(synced.artifact_id, snapshot_id=first)  # a rollback
+    # A rollback, which the record follows: it describes the version readers now see.
+    rolled_back = services.publish_artifact_record(synced.artifact_id, snapshot_id=first)
     assert _read(store["path"]) == (2, 1.0)
-    with pytest.raises(HTTPException) as unknown:
-        services.publish_artifact_record(synced.artifact_id, snapshot_id="0" * 20)
-    assert unknown.value.status_code == 404
+    assert rolled_back.coverage.temporal.end == DAYS[1]
+    for refused in ("0" * 20, str(history[-1].id)):  # unknown, and the empty first snapshot
+        with pytest.raises(HTTPException) as unknown:
+            services.publish_artifact_record(synced.artifact_id, snapshot_id=refused)
+        assert unknown.value.status_code == 404
+
+    # A writer that registers a rewrite of a published store, as openEO does, publishes it too.
+    services.register_artifact_record(rolled_back, publish=False, replace_store=True)
+    assert _published(store["path"]) == str(_repo(store["path"]).lookup_branch("main"))
+    assert _read(store["path"]) == (3, 1.0)
 
 
 def test_startup_brings_branch_and_record_into_step(store: dict[str, Any]) -> None:

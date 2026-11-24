@@ -879,8 +879,11 @@ record = get_latest_artifact_for_dataset_or_404("chirps3_precipitation_daily")
 publish_artifact_record(record.artifact_id, snapshot_id="<snapshot id>")
 ```
 
-The next sync publishes the tip of `main` again. A snapshot that is not a kept version of the
-store is refused.
+The record then describes that version, its coverage and statistics, while `main` keeps the
+newer ones, so the next sync finds the record behind the store and publishes `main` again. A
+snapshot that is not a kept version of the store is refused, and so is the store's empty first
+snapshot. Every other kept snapshot is a whole version: a sync's pyramid levels and other
+normalization are folded into the snapshot that wrote its periods.
 
 **Collection.** A rolled-back append, an abandoned replacement and an expired snapshot leave data that no branch
 reaches, and Icechunk keeps it until collected. Only data that no branch or tag reaches is

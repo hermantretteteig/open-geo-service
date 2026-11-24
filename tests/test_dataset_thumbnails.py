@@ -334,7 +334,7 @@ def test_the_store_is_closed_once_the_pixels_are_read(tmp_path: Path, monkeypatc
             closed.append(True)
             self._ds.close()
 
-    monkeypatch.setattr(accessor, "open_icechunk_dataset", lambda path: Tracked(real_open(path)))
+    monkeypatch.setattr(accessor, "open_icechunk_dataset", lambda path, **kw: Tracked(real_open(path, **kw)))
 
     assert write_dataset_thumbnail(_store(tmp_path, _daily_cube(2)), DATASET, now=GENERATED_AT) is not None
     assert closed == [True]
