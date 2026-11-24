@@ -216,6 +216,14 @@ def test_the_published_branch_decides_what_readers_see(store: dict[str, Any], mo
             services.publish_artifact_record(synced.artifact_id, snapshot_id=refused)
         assert unknown.value.status_code == 404
 
+    # A sync that finds the record behind the store re-registers it and publishes `main` again;
+    # if its record write fails, readers stay on the version the record describes.
+    with monkeypatch.context() as patched:
+        patched.setattr(services, "_upsert_artifact_record", _raise)
+        with pytest.raises(OSError, match="write failed"):
+            _ingest(store, overwrite=False)
+    assert _published(store["path"]) == first
+
     # A writer that registers a rewrite of a published store, as openEO does, publishes it too.
     services.register_artifact_record(rolled_back, publish=False, replace_store=True)
     assert _published(store["path"]) == str(_repo(store["path"]).lookup_branch("main"))
@@ -223,11 +231,15 @@ def test_the_published_branch_decides_what_readers_see(store: dict[str, Any], mo
 
 
 def test_startup_brings_branch_and_record_into_step(store: dict[str, Any]) -> None:
-    # A store from before the branch: published record, no branch.
-    record = _ingest(store, overwrite=False, publish=True)
+    # A store from before the branch: published record, no branch, and a tip not marked
+    # complete, which publishing marks, so a rollback may return to what readers are served.
+    record = _ingest(store, overwrite=False, end=DAYS[1], publish=True)
+    _repo(store["path"]).writable_session("main").commit("unmarked", allow_empty=True)
     _repo(store["path"]).delete_branch("published")
     assert services.reconcile_published_branches() == 1
-    assert _published(store["path"]) == str(_repo(store["path"]).lookup_branch("main"))
+    tip = next(iter(_repo(store["path"]).ancestry(branch="main")))
+    assert _published(store["path"]) == str(tip.id) and tip.metadata.get("ogs_complete")
+    record = services.list_artifacts().items[0]
 
     # A crash between moving the branch and writing the record: the record follows the branch.
     def unpublish(records: list[services.ArtifactRecord]) -> None:
@@ -237,6 +249,20 @@ def test_startup_brings_branch_and_record_into_step(store: dict[str, Any]) -> No
     assert services.reconcile_published_branches() == 1
     (followed,) = services.list_artifacts().items
     assert followed.publication.status == PublicationStatus.PUBLISHED
+    assert services.reconcile_published_branches() == 0
+
+    # A crash after a sync moved the branch, before its record: the record describes the branch.
+    synced = _ingest(store, overwrite=False)
+    assert synced.publication.snapshot_id == _published(store["path"])
+
+    def crash(records: list[services.ArtifactRecord]) -> None:
+        records[:] = [stored for stored in records if stored.artifact_id != synced.artifact_id]
+
+    services._mutate_records(crash)
+    assert services.reconcile_published_branches() == 1
+    (described,) = services.list_artifacts().items
+    assert described.coverage.temporal.end == DAYS[-1]
+    assert described.publication.snapshot_id == _published(store["path"])
     assert services.reconcile_published_branches() == 0
 
 

@@ -1505,11 +1505,11 @@ def _create_streaming_artifact(
             overwrite=overwrite,
         )
         store_committed = True
-        if stored_record.publication.status == PublicationStatus.PUBLISHED:
-            return stored_record
         if published_before is not None:
             # The branch moved above, so the record follows it.
             return _record_publication(stored_record)
+        if stored_record.publication.status == PublicationStatus.PUBLISHED:
+            return stored_record
         if publish:
             return publish_artifact_record(stored_record.artifact_id)
         return stored_record
@@ -1522,13 +1522,23 @@ def _create_streaming_artifact(
                 except Exception:
                     logger.warning("Could not close ingestion plugin after planning failure", exc_info=True)
             rolled_back = False
+            if published_before is not None and not store_committed:
+                # Readers go back to the version the record still describes, also after a NO_OP
+                # that re-registered the store and so has no rollback of `main`.
+                try:
+                    open_or_create_repo(store_path).reset_branch(PUBLISHED_BRANCH, published_before)
+                except Exception:
+                    logger.error(
+                        "Could not move '%s' of '%s' back; the next writer start describes what it holds",
+                        PUBLISHED_BRANCH,
+                        store_path,
+                        exc_info=True,
+                    )
             if repo is not None and rollback_snapshot is not None:
                 rolled_back = not store_committed and ingest_completed
                 if rolled_back:
                     try:
                         repo.reset_branch("main", rollback_snapshot)
-                        if published_before is not None:
-                            repo.reset_branch(PUBLISHED_BRANCH, published_before)
                     except Exception as exc:
                         rollback_error = exc
                         logger.error("Could not roll back the update of '%s'", store_path, exc_info=True)
@@ -1542,9 +1552,10 @@ def _create_streaming_artifact(
                 rolled_back or replacement_branch is not None or rewritten or expired or amended_periods
             )
             if collected:
-                # Still under the store lock, so nothing is mid-write. Only when something worth it
-                # became unreachable: what this ingest replaced, abandoned or expired, or the
-                # periods it amended away. A one-period sync usually leaves nothing to collect.
+                # Still under the store lock, so nothing is mid-write. Only when something became
+                # unreachable: what this ingest replaced, abandoned or expired, or the periods it
+                # amended away. Once the retention window is full, a daily sync expires a
+                # snapshot a day, so this runs on most of them: 8 s on a 21 GB store of 415,000 files.
                 _collect_replaced_versions(store_path)
             kept_partial_append = (
                 not store_committed and not ingest_completed and replacement_branch is None and repo is not None
@@ -1645,6 +1656,16 @@ def _expire_replaced_versions(store_path: Path) -> bool:
     if expired:
         logger.info("Expired %d snapshots older than the retention setting from '%s'", len(expired), store_path.name)
     return bool(expired)
+
+
+def expire_and_collect(store_path: Path) -> None:
+    """Expire the versions past the retention setting and free what only they kept.
+
+    For a writer other than ingestion, such as an openEO publication, after it has committed.
+    Call with the store's write lock held. Never raises.
+    """
+    if _expire_replaced_versions(store_path):
+        _collect_replaced_versions(store_path)
 
 
 def _collect_replaced_versions(store_path: Path) -> None:
@@ -1996,22 +2017,19 @@ def publish_artifact_record(artifact_id: str, snapshot_id: str | None = None) ->
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         if snapshot_id is not None:
-            coverage = get_data_coverage_for_paths(
-                {"period_type": record.period_type}, icechunk_path=str(store_path), branch=PUBLISHED_BRANCH
-            )
-            record = record.model_copy(
-                update={
-                    "coverage": _artifact_coverage(coverage),
-                    "statistics": (
-                        measure_statistics(store_path, record.variable, branch=PUBLISHED_BRANCH)
-                        if record.variable
-                        else None
-                    ),
-                }
-            )
+            record = _describing_published(record, store_path)
     elif snapshot_id is not None:
         raise HTTPException(status_code=409, detail=f"Artifact '{artifact_id}' has no versions to publish")
     return _record_publication(record)
+
+
+def _describing_published(record: ArtifactRecord, store_path: Path) -> ArtifactRecord:
+    """*record* with the coverage and statistics of the version `published` holds."""
+    coverage = get_data_coverage_for_paths(
+        {"period_type": record.period_type}, icechunk_path=str(store_path), branch=PUBLISHED_BRANCH
+    )
+    statistics = measure_statistics(store_path, record.variable, branch=PUBLISHED_BRANCH) if record.variable else None
+    return record.model_copy(update={"coverage": _artifact_coverage(coverage), "statistics": statistics})
 
 
 def _artifact_coverage(coverage_data: dict[str, Any]) -> ArtifactCoverage:
@@ -2025,9 +2043,17 @@ def _artifact_coverage(coverage_data: dict[str, Any]) -> ArtifactCoverage:
 
 
 def _record_publication(record: ArtifactRecord) -> ArtifactRecord:
-    """Mark *record* published, keeping its publication metadata if it already was."""
+    """Mark *record* published, keeping its publication metadata if it already was.
+
+    For an Icechunk raster, also note the snapshot of `published` it now describes.
+    """
     artifact_id = record.artifact_id
     published = record if record.publication.status == PublicationStatus.PUBLISHED else publish_artifact(record)
+    if published.format == ArtifactFormat.ICECHUNK and published.path and (Path(published.path) / "repo").exists():
+        snapshot = published_snapshot(open_or_create_repo(Path(published.path)))
+        published = published.model_copy(
+            update={"publication": published.publication.model_copy(update={"snapshot_id": snapshot})}
+        )
 
     def mutate(records: list[ArtifactRecord]) -> ArtifactRecord:
         for index, stored in enumerate(records):
@@ -2043,11 +2069,11 @@ def _record_publication(record: ArtifactRecord) -> ArtifactRecord:
 def reconcile_published_branches() -> int:
     """Bring each raster store's `published` branch and its records into step; return how many changed.
 
-    Run by the writer at startup. Publication moves the branch before it writes the record, so a
-    crash between the two leaves a branch whose newest record is not marked published; the
-    record then follows the branch. A store with a published record and no branch predates the
-    branch, and gets one at the tip of `main`. There is no unpublishing, so nothing else leaves
-    the two apart.
+    Run by the writer at startup. Publication and sync move the branch before they write the
+    record, so a crash between the two leaves a newest record that is not marked published, or
+    that describes an earlier snapshot than the branch holds; the record then follows the branch.
+    A store with a published record and no branch predates the branch, and gets one at the tip
+    of `main`. There is no unpublishing, so nothing else leaves the two apart.
     """
     by_store: dict[str, list[ArtifactRecord]] = {}
     for record in _load_records():
@@ -2059,12 +2085,17 @@ def reconcile_published_branches() -> int:
         if not (store_path / "repo").exists():
             continue
         try:
-            has_branch = published_snapshot(open_or_create_repo(store_path)) is not None
+            tip = published_snapshot(open_or_create_repo(store_path))
             newest = max(records, key=lambda record: record.created_at)
-            if not has_branch and any(r.publication.status == PublicationStatus.PUBLISHED for r in records):
+            published = newest.publication.status == PublicationStatus.PUBLISHED
+            if tip is None and any(r.publication.status == PublicationStatus.PUBLISHED for r in records):
                 publish_snapshot(store_path)
-            elif has_branch and newest.publication.status != PublicationStatus.PUBLISHED:
+                if published:
+                    _record_publication(newest)
+            elif tip is not None and not published:
                 _record_publication(newest)
+            elif tip is not None and newest.publication.snapshot_id != tip:
+                _record_publication(_describing_published(newest, store_path))
             else:
                 continue
         except Exception:

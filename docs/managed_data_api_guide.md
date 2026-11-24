@@ -863,9 +863,11 @@ and GeoService's own pages read `main` for it.
   that store removes. If rollback itself fails, the job reports it and names the rollback branch,
   which still points at the version before the ingest.
 - **Publication decides, the record follows.** Publishing moves `published` first and then marks
-  the record published, and a sync of a published dataset moves the branch with it. A writer
-  started after a crash between the two marks the record to match the branch, and gives a store
-  from before the branch existed one at the tip of `main`.
+  the record published, and a sync of a published dataset moves the branch with it. The record
+  notes the snapshot it describes. A writer started after a crash between the two marks the
+  record published, or describes the branch's version on it when the snapshots differ, and gives
+  a store from before the branch existed one at the tip of `main`. Whatever `published` moves
+  to is marked complete, so a rollback may return to any version readers were served.
 
 **Versions and rollback.** Each sync leaves one snapshot in the history of `main`: its periods,
 pyramid levels and other normalization in one commit, marked complete once the sync has finished.

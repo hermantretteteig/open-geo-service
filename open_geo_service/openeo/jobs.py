@@ -1878,6 +1878,8 @@ def _write_managed_zarr(
                 update["provenance"] = record.provenance.model_copy(update={"output_snapshot_id": snapshot_id})
             record = record.model_copy(update=update)
             ingestion_services.register_artifact_record(record, publish=_publish_raw)
+        # Each publication is a full rewrite, so versions past the retention setting go as a sync's do.
+        ingestion_services.expire_and_collect(store_path)
     finally:
         store_lock.release()
 

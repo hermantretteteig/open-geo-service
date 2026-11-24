@@ -76,16 +76,20 @@ def published_snapshot(repo: Any) -> str | None:
 def publish_snapshot(store_path: Path, snapshot_id: str | None = None) -> str | None:
     """Move `published` to *snapshot_id*, or to the tip of `main`; return where it was, or None.
 
-    Creates the branch the first time. An older *snapshot_id* rolls the store back; it must be
-    a complete version (see :data:`COMPLETE_VERSION`) in the history of `main` that retention has
-    kept. The move is conditional on the branch being where it was read, so a move this process
-    did not expect fails instead of being overwritten.
+    Creates the branch the first time. The tip of `main` is marked complete first, if it is not.
+    An older *snapshot_id* rolls the store back; it must be a complete version (see
+    :data:`COMPLETE_VERSION`) in the history of `main` that retention has kept. The move is
+    conditional on the branch being where it was read, so a move this process did not expect
+    fails instead of being overwritten.
     """
     from open_geo_service import writer_lease
 
     writer_lease.ensure_held()
     repo = open_or_create_repo(store_path)
     if snapshot_id is None:
+        if not next(iter(repo.ancestry(branch="main"))).metadata.get("ogs_complete"):
+            # Readers are served it from now on, so it is a version a rollback may return to.
+            seal_version(store_path)
         target = str(repo.lookup_branch("main"))
     elif any(
         str(snapshot.id) == snapshot_id and snapshot.metadata.get("ogs_complete")

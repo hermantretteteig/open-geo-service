@@ -9,15 +9,19 @@ observed variable's unit.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import icechunk
 import numpy as np
 import pandas as pd
 import pytest
 import rioxarray  # noqa: F401  # pyright: ignore[reportUnusedImport]  # activates .rio
 import xarray as xr
 
+from open_geo_service import config as api_config
+from open_geo_service.data_manager.services import downloader
 from open_geo_service.data_registry.services import datasets as registry
 from open_geo_service.openeo import jobs
 from open_geo_service.plugins.processes.compute_anomaly import compute_anomaly
@@ -274,7 +278,9 @@ def test_publish_against_a_preregistered_absolute_template_is_refused(managed_in
         )
 
 
-def test_absolute_anomaly_publishes_with_the_observed_unit_end_to_end(managed_instance: Path) -> None:
+def test_absolute_anomaly_publishes_with_the_observed_unit_end_to_end(
+    managed_instance: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The counterpart, so the fix cannot pass by dropping inheritance altogether."""
     times = pd.date_range("2024-01-01", periods=5, freq="D")
     observed = xr.DataArray(
@@ -304,6 +310,15 @@ def test_absolute_anomaly_publishes_with_the_observed_unit_end_to_end(managed_in
 
     assert _published_units("chirps3_precipitation_daily_anomaly") == "mm/d"
     assert float(ds["tp"].isel(t=0, y=0, x=0)) == pytest.approx(2.0)
+
+    # Publishing again expires the versions past the retention setting, as a sync does.
+    monkeypatch.setattr(api_config, "get_snapshot_retention", lambda: timedelta(0))
+    options = {"dataset_id": "chirps3_precipitation_daily_anomaly", "variable": "tp"}
+    jobs._write_managed_zarr(ds, {**options, "source_dataset_id": "chirps3_precipitation_daily"})
+    store = icechunk.Repository.open(
+        icechunk.local_filesystem_storage(str(downloader.get_icechunk_path({"id": options["dataset_id"]})))
+    )
+    assert len(list(store.ancestry(branch="main"))) == 2, "the current version, over the empty first"
 
 
 # -- `units` in the save_result options is a declaration, not an escape hatch (CLIM-918) ------
