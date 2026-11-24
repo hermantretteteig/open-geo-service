@@ -123,6 +123,15 @@ def test_an_overwrite_moves_readers_to_the_new_version_in_one_step(
     assert collected.size_bytes is not None and replaced.size_bytes is not None
     assert collected.size_bytes < replaced.size_bytes
     assert _read(store["path"]) == (3, 2.0)
+    writes = services._records_write_count
+    services._refresh_recorded_size(store["path"])
+    assert services._records_write_count == writes, "an unchanged size leaves the index, and its caches, alone"
+
+    # A version older than the window is freed by the overwrite itself, and the size counts it gone.
+    store["plugin"] = _ValuePlugin(3.0)
+    _ingest(store, overwrite=True)
+    (overwritten,) = services.list_artifacts().items
+    assert overwritten.size_bytes == services.stored_bytes(store["path"])
 
 
 @pytest.mark.parametrize("failure", ["fetch", "normalization", "record"])
@@ -164,11 +173,12 @@ def test_a_failed_sync_that_rebuilt_the_store_resets_main(
     assert _branches(store["path"]) == {"main"}
 
 
-def test_a_branch_that_cannot_be_deleted_is_left_for_cleanup(
+def test_cleanup_removes_a_branch_left_undeleted_but_keeps_the_one_a_failed_rollback_names(
     store: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _ingest(store, overwrite=False)
     store["plugin"] = _ValuePlugin(2.0)
+    delete_branch = services._delete_branch
     monkeypatch.setattr(services, "_delete_branch", _raise)
 
     artifact = _ingest(store, overwrite=True)  # after the record is written: the new version stays
@@ -182,9 +192,33 @@ def test_a_branch_that_cannot_be_deleted_is_left_for_cleanup(
     with pytest.raises(OSError, match="write failed"):
         _ingest(store, overwrite=True)
     assert _read(store["path"]) == (3, 2.0)
-    monkeypatch.undo()
+    monkeypatch.setattr(services, "_delete_branch", delete_branch)
     assert services.clean_up_interrupted_ingest(store["path"])
     assert _branches(store["path"]) == {"main"}
+
+    # A rollback that cannot reset `main` leaves the version before it on a branch the operator
+    # restores from, which no cleanup removes.
+    reset = icechunk.Repository.reset_branch
+    resets: list[str] = []
+
+    def reset_once(repo: Any, branch: str, snapshot: str) -> None:
+        resets.append(snapshot)
+        if len(resets) > 1:
+            raise OSError("reset failed")
+        reset(repo, branch, snapshot)
+
+    monkeypatch.setattr(icechunk.Repository, "reset_branch", reset_once)
+    with pytest.raises(RuntimeError, match="rollback could not complete") as failed:
+        _ingest(store, overwrite=True)
+    (kept,) = _branches(store["path"]) - {"main"}
+    assert kept.startswith("ogs-restore-") and kept in str(failed.value)
+    assert _read(store["path"]) == (3, 3.0), "main stayed on the attempt"
+    monkeypatch.setattr(downloader, "DOWNLOAD_DIR", store["path"].parent)
+    services.clean_up_interrupted_ingest(store["path"])
+    services.clean_up_interrupted_ingests()
+    repo = icechunk.Repository.open(icechunk.local_filesystem_storage(str(store["path"])))
+    reset(repo, "main", repo.lookup_branch(kept))
+    assert _read(store["path"]) == (3, 2.0)
 
 
 _KILLED_OVERWRITE = """
@@ -260,7 +294,10 @@ def test_a_killed_overwrite_leaves_the_store_readable(
     monkeypatch.setattr(downloader, "DOWNLOAD_DIR", store["path"].parent)
     assert services.clean_up_interrupted_ingests() == 1
     assert _branches(store["path"]) == {"main"}
-    assert marker.read_text() > "2026", "the pending collection starts at startup"
+    assert marker.read_text() > "2026", "the pending collection starts after what the killed process wrote"
+    moved = marker.read_text()
+    services.clean_up_interrupted_ingests()
+    assert marker.read_text() == moved, "a restart that finds nothing new written leaves it"
 
     store["plugin"] = _ValuePlugin(2.0)
     _ingest(store, overwrite=True)

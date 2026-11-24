@@ -1502,6 +1502,7 @@ def _create_streaming_artifact(
                     except Exception as exc:
                         rollback_error = exc
                         logger.error("Could not roll back the update of '%s'", store_path, exc_info=True)
+                        rollback_branch = _keep_for_restore(repo, rollback_branch, rollback_snapshot)
                 for branch in (rollback_branch, replacement_branch):
                     if branch is None or (rollback_error is not None and branch == rollback_branch):
                         continue  # the rollback branch still names the version to restore by hand
@@ -1521,8 +1522,9 @@ def _create_streaming_artifact(
             if rollback_error is not None:
                 raise RuntimeError(
                     f"Ingestion failed and rollback could not complete for '{store_path}'. "
-                    f"Branch '{rollback_branch}' still names the version before it, snapshot "
-                    f"'{rollback_snapshot}'; reset `main` to it before retrying."
+                    f"Branch '{rollback_branch}' names the version before it, snapshot "
+                    f"'{rollback_snapshot}'; reset `main` to it before retrying, then delete the branch. "
+                    "Nothing else deletes it."
                 ) from rollback_error
         finally:
             # Releasing the in-process writer lock must not depend on store cleanup.
@@ -1531,6 +1533,28 @@ def _create_streaming_artifact(
 
 # Every branch an ingest creates for itself starts with this, and only lives while the ingest runs.
 _INGEST_BRANCH_PREFIX = "ogs-ingest-"
+
+# A branch naming the version a failed rollback could not restore; cleanup leaves it for the operator.
+_RESTORE_BRANCH_PREFIX = "ogs-restore-"
+
+
+def _keep_for_restore(repo: Any, branch: str | None, snapshot: str) -> str | None:
+    """Name *snapshot* by a branch cleanup leaves alone, in place of the ingest's own *branch*.
+
+    Returns the branch that names it, *branch* itself if a new one could not be made.
+    """
+    kept = f"{_RESTORE_BRANCH_PREFIX}{uuid4().hex}"
+    try:
+        repo.create_branch(kept, snapshot)
+    except Exception:
+        logger.error("Could not keep snapshot '%s' on a branch of its own", snapshot, exc_info=True)
+        return branch
+    if branch is not None:
+        try:
+            _delete_branch(repo, branch)
+        except Exception:
+            logger.warning("Could not delete branch '%s'; the next cleanup does", branch, exc_info=True)
+    return kept
 
 
 def _first_snapshot(repo: Any) -> str:
@@ -1595,6 +1619,8 @@ def _collect_replaced_versions(store_path: Path) -> None:
         return
     collect_unreachable_objects(repo, store_path)
     _mark_collection_pending(store_path)
+    # A version older than the retention window was freed at once, and the recorded size counted it.
+    _refresh_recorded_size(store_path)
 
 
 # Unreachable objects younger than this are kept. Readers take no store lock, and one that
@@ -1640,16 +1666,29 @@ def _collection_marker(store_path: Path) -> Path:
     return store_path.with_name(f"{store_path.name}.gc-pending")
 
 
-def _mark_collection_pending(store_path: Path) -> None:
+def _mark_collection_pending(store_path: Path, *, at: datetime | None = None) -> None:
     """Record that *store_path* holds unreachable objects too recent to collect yet.
 
     A file beside the store holding the time, so the collection survives a restart and runs
     whether or not the dataset is ever synced again. A later rollback moves the time forward.
     """
     try:
-        _collection_marker(store_path).write_text(datetime.now(UTC).isoformat())
+        _collection_marker(store_path).write_text((at or datetime.now(UTC)).isoformat())
     except OSError:
         logger.warning("Could not mark a pending collection for '%s'", store_path, exc_info=True)
+
+
+def _move_collection_after_writes(store_path: Path) -> None:
+    """Move a pending collection of *store_path* to its newest write, when that is later than the marker."""
+    marker = _collection_marker(store_path)
+    try:
+        marked = datetime.fromisoformat(marker.read_text().strip())
+    except (OSError, ValueError):
+        return  # none pending, or unreadable, which `collect_pending_garbage` collects at once
+    times = [path.stat().st_mtime for path in (store_path / "repo").rglob("*") if path.is_file()]
+    newest = datetime.fromtimestamp(max(times), UTC) if times else None
+    if newest is not None and newest > marked:
+        _mark_collection_pending(store_path, at=newest)
 
 
 def collect_pending_garbage(store_path: Path) -> bool:
@@ -1685,8 +1724,9 @@ def clean_up_interrupted_ingests() -> int:
 
     Run by the writer at startup, so a store that is never ingested again is cleaned up too: a
     killed overwrite's branches, and what a killed pyramid build wrote. Nothing of the previous
-    process is still writing, so a pending collection is moved to start now, which covers whatever
-    it wrote after marking. A store an ingest already holds is skipped.
+    process is still writing, so a pending collection is moved to start after the store's newest
+    write, which covers whatever it wrote after marking; a clean restart moves nothing. A store an
+    ingest already holds is skipped.
     """
     directory = Path(downloader.DOWNLOAD_DIR)
     if not directory.is_dir():
@@ -1697,8 +1737,7 @@ def clean_up_interrupted_ingests() -> int:
         if not lock.acquire(blocking=False):
             continue
         try:
-            if _collection_marker(store_path).exists():
-                _mark_collection_pending(store_path)
+            _move_collection_after_writes(store_path)
             changed += clean_up_interrupted_ingest(store_path)
         finally:
             lock.release()
@@ -2531,13 +2570,20 @@ def _refresh_recorded_size(store_path: Path) -> None:
         path = str(store_path.resolve())
         size = stored_bytes(store_path)
 
-        def update(records: list[ArtifactRecord]) -> None:
+        def newest(records: list[ArtifactRecord]) -> int | None:
             matching = [index for index, record in enumerate(records) if record.path == path]
-            if matching:
-                newest = max(matching, key=lambda index: records[index].created_at)
-                records[newest] = records[newest].model_copy(update={"size_bytes": size})
+            return max(matching, key=lambda index: records[index].created_at) if matching else None
 
-        _mutate_records(update)
+        def update(records: list[ArtifactRecord]) -> None:
+            index = newest(records)
+            if index is not None:
+                records[index] = records[index].model_copy(update={"size_bytes": size})
+
+        # Rewriting the index empties every dataset's cached repositories and sessions.
+        current = _load_records()
+        index = newest(current)
+        if index is not None and current[index].size_bytes != size:
+            _mutate_records(update)
     except Exception:
         logger.warning("Could not refresh the recorded size of '%s'", store_path, exc_info=True)
 
