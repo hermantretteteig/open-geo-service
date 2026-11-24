@@ -11,7 +11,12 @@ const runs = Number(runsArg);
 const QUIET_MS = 750;
 const TIMEOUT_MS = 60_000;
 
-const browser = await chromium.launch({ channel: "chrome", headless: true });
+// Software WebGL: headless Chrome may have no GPU, and the map then never draws or reads data.
+const browser = await chromium.launch({
+  channel: "chrome",
+  headless: true,
+  args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"],
+});
 
 async function load(page, url, traffic) {
   traffic.length = 0;
