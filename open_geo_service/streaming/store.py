@@ -74,7 +74,10 @@ def publish_snapshot(store_path: Path, snapshot_id: str | None = None) -> str | 
     repo = open_or_create_repo(store_path)
     if snapshot_id is None:
         target = str(repo.lookup_branch("main"))
-    elif any(str(snapshot.id) == snapshot_id for snapshot in repo.ancestry(branch="main")):
+    elif any(
+        str(snapshot.id) == snapshot_id and snapshot.parent_id is not None for snapshot in repo.ancestry(branch="main")
+    ):
+        # Not the repository's first snapshot, which is empty; every later one is a whole version.
         target = snapshot_id
     else:
         raise ValueError(f"Snapshot '{snapshot_id}' is not a kept version of {store_path.name}")

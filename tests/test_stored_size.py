@@ -65,12 +65,33 @@ def _no_walking(*_args: object, **_kwargs: object) -> int:
 
 
 def test_a_store_directory_is_measured_by_its_files(tmp_path: Path) -> None:
-    store = tmp_path / "store.icechunk"
+    store = tmp_path / "store.zarr"
     (store / "chunks" / "a").mkdir(parents=True)
     (store / "chunks" / "a" / "0").write_bytes(b"x" * 1000)
     (store / "refs").write_bytes(b"y" * 24)
 
     assert stored_bytes(store) == 1024
+
+
+def test_an_icechunk_store_is_measured_by_the_chunks_it_keeps(tmp_path: Path) -> None:
+    import numpy as np
+
+    from open_geo_service.streaming.store import open_or_create_repo
+
+    store = tmp_path / "store.icechunk"
+    repo = open_or_create_repo(store)
+    session = repo.writable_session("main")
+    # Random values, too large to compress below the size Icechunk inlines into manifests.
+    data = np.random.default_rng(0).random((64, 64), dtype="float32")
+    xr.Dataset({"v": (("y", "x"), data)}).to_zarr(session.store, mode="w", zarr_format=3)
+    session.commit("one chunk")
+    size = stored_bytes(store)
+    assert 0 < size <= data.nbytes
+
+    # Branch operations rewrite the repository file and keep backups of it: no chunk changes.
+    repo.create_branch("published", repo.lookup_branch("main"))
+    repo.delete_branch("published")
+    assert stored_bytes(store) == size
 
 
 def test_a_file_is_measured_by_its_size_and_a_missing_path_counts_as_nothing(tmp_path: Path) -> None:
@@ -176,10 +197,7 @@ def test_an_openeo_publish_records_the_size_and_statistics_of_the_store_it_wrote
 
     records = [r for r in ingestion_services._load_records() if r.dataset_id == "published_sized"]
     assert len(records) == 1 and records[0].path is not None
-    # Publishing after the size is measured adds the `published` branch to Icechunk's repository
-    # file, a few hundred bytes; what matters is that the size is of the store the job wrote.
-    size = records[0].size_bytes
-    assert size is not None and 0 < size <= stored_bytes(records[0].path) < size + 2048
+    assert records[0].size_bytes == stored_bytes(records[0].path) > 0
     assert _min_max(records[0].statistics) == (-4.0, 7.0)
 
 

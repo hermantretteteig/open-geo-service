@@ -35,8 +35,10 @@ _PERCENTILE_STATS = {name: float(name[1:]) for name in ArtifactStatistics.model_
 _PERCENTILE_SAMPLE_AT = np.linspace(0.0, 100.0, 1001)
 
 
-def measure_statistics(store_path: str | Path, variable: str) -> ArtifactStatistics | None:
-    """The statistics of *variable* in the Icechunk store at *store_path*, or None.
+def measure_statistics(store_path: str | Path, variable: str, *, branch: str = "main") -> ArtifactStatistics | None:
+    """The statistics of *variable* at *branch* of the Icechunk store at *store_path*, or None.
+
+    `main` by default: a writer measures what it just committed, before publishing it.
 
     Missing and infinite cells are skipped; the store's fill value is already decoded to NaN on open. None
     when the variable is absent or has no finite value. **Never raises**: statistics feed the
@@ -46,7 +48,7 @@ def measure_statistics(store_path: str | Path, variable: str) -> ArtifactStatist
     try:
         from open_geo_service.data_accessor.services.accessor import open_icechunk_dataset
 
-        with closing(open_icechunk_dataset(store_path)) as ds:
+        with closing(open_icechunk_dataset(store_path, branch=branch)) as ds:
             if variable not in ds.data_vars:
                 logger.warning("No variable '%s' in %s to measure statistics from", variable, store_path)
                 return None
