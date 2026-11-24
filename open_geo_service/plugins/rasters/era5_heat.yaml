@@ -10,6 +10,10 @@
   sync:
     kind: temporal
     execution: append
+    # Recent days are the intermediate product, computed from ERA5T and replaced by the
+    # consolidated one from final ERA5. P4M, as on the ERA5-Land templates, leaves margin;
+    # every template below declares the same.
+    refresh_after: P4M
   extents:
     spatial:
       bbox: [-180, -90, 180, 90]
@@ -18,7 +22,7 @@
       resolution: P1D
   ingestion:
     plugin: open_geo_service.plugins.rasters.era5_heat.ERA5HeatDailyUTCIPlugin
-    params: 
+    params:
       temporal_aggregation: mean
   units: degC
   cell_methods: "time: mean"
@@ -46,6 +50,7 @@
   sync:
     kind: temporal
     execution: append
+    refresh_after: P4M
   extents:
     spatial:
       bbox: [-180, -90, 180, 90]
@@ -54,7 +59,7 @@
       resolution: P1D
   ingestion:
     plugin: open_geo_service.plugins.rasters.era5_heat.ERA5HeatDailyUTCIPlugin
-    params: 
+    params:
       temporal_aggregation: max
   units: degC
   cell_methods: "time: maximum"
@@ -82,6 +87,7 @@
   sync:
     kind: temporal
     execution: append
+    refresh_after: P4M
   extents:
     spatial:
       bbox: [-180, -90, 180, 90]
@@ -90,7 +96,7 @@
       resolution: P1D
   ingestion:
     plugin: open_geo_service.plugins.rasters.era5_heat.ERA5HeatDailyUTCIPlugin
-    params: 
+    params:
       temporal_aggregation: min
   units: degC
   cell_methods: "time: minimum"
