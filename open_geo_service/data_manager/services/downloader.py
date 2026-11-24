@@ -591,6 +591,7 @@ def write_to_icechunk_store(
     before_commit: Callable[[], None] | None = None,
     branch: str = "main",
     amend: bool = False,
+    metadata: dict[str, Any] | None = None,
 ) -> str:
     """Write *ds* to an Icechunk store, building a multiscale pyramid when needed.
 
@@ -800,13 +801,13 @@ def write_to_icechunk_store(
 
     if before_commit is not None:
         before_commit()
-    return str(_commit(session, commit_message, amend=amend))
+    return str(_commit(session, commit_message, amend=amend, metadata=metadata))
 
 
-def _commit(session: Any, message: str, *, amend: bool) -> str:
+def _commit(session: Any, message: str, *, amend: bool, metadata: dict[str, Any] | None = None) -> str:
     """Commit *session*, or with *amend* fold it into the branch's last commit.
 
     A sync amends its normalization into the commit that wrote its periods, so every snapshot it
     leaves in the history is a complete version, which a rollback may publish.
     """
-    return str(session.amend(message) if amend else session.commit(message))
+    return str(session.amend(message, metadata=metadata) if amend else session.commit(message, metadata=metadata))

@@ -139,7 +139,27 @@ def test_an_overwrite_moves_readers_to_the_new_version_in_one_step(
     assert _read(store["path"]) == (3, 1.0)
 
 
+def test_a_sync_that_fails_part_way_is_not_a_version_to_roll_back_to(store: dict[str, Any]) -> None:
+    record = _ingest(store, overwrite=False, end=DAYS[0], publish=True)
+    store["plugin"] = _ValuePlugin(1.0, fail_at=DAYS[2])
+    with pytest.raises(Exception, match="upstream fetch failed"):
+        _ingest(store, overwrite=False)
+
+    partial = str(_repo(store["path"]).lookup_branch("main"))  # holds DAYS[1], kept for the retry
+    assert partial != _published(store["path"])
+    with pytest.raises(HTTPException) as refused:
+        services.publish_artifact_record(record.artifact_id, snapshot_id=partial)
+    assert refused.value.status_code == 404
+
+
 def test_retention_zero_keeps_only_the_current_version(store: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    # A setting that is not a whole number of days refuses startup rather than stopping cleanup.
+    for bad in ("14", 7.5, -1):
+        with monkeypatch.context() as patched:
+            patched.setattr(api_config, "get_config", lambda bad=bad: {"snapshot_retention_days": bad})
+            with pytest.raises(ValueError, match="snapshot_retention_days"):
+                api_config.get_snapshot_retention()
+
     monkeypatch.setattr(services, "_GC_RETENTION", timedelta(0))
     monkeypatch.setattr(api_config, "get_snapshot_retention", lambda: timedelta(0))
     _ingest(store, overwrite=False, publish=True)
@@ -183,10 +203,9 @@ def test_the_published_branch_decides_what_readers_see(store: dict[str, Any], mo
     assert _published(store["path"]) == str(_repo(store["path"]).lookup_branch("main")) != first
     assert _read(store["path"]) == (3, 1.0)
     # One whole snapshot per sync, its pyramid levels extended in the same one, above the empty
-    # first; the earlier sync's is kept. What the sync amended away is due for collection.
+    # first; the earlier sync's is kept.
     history = list(_repo(store["path"]).ancestry(branch="main"))
     assert len(history) == 3
-    assert store["path"].with_name("tg.icechunk.gc-pending").exists()
 
     # A rollback, which the record follows: it describes the version readers now see.
     rolled_back = services.publish_artifact_record(synced.artifact_id, snapshot_id=first)

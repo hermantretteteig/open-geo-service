@@ -92,6 +92,7 @@ from open_geo_service.streaming.store import (
     published_snapshot,
     read_committed_period_ids_ordered,
     read_snapshot,
+    seal_version,
 )
 
 logger = logging.getLogger(__name__)
@@ -1304,8 +1305,10 @@ def _create_streaming_artifact(
     # Where `published` was before this ingest moved it, when it did.
     published_before: str | None = None
     rewritten = False
-    # Whether this ingest committed periods, which normalization then amends into one version.
+    # Whether this ingest committed periods, which normalization then amends into one version, and
+    # whether it amended earlier ones away, which leaves data for a collection.
     wrote_this_run = False
+    amended_periods = False
     store_committed = False
     plugin_handed_to_orchestrator = False
     ingest_completed = False
@@ -1417,6 +1420,7 @@ def _create_streaming_artifact(
             )
             ingest_completed = True
             wrote_this_run = result.periods_written > 0
+            amended_periods = result.periods_written > 1
             if result.periods_written == 0 and (replacement_branch is not None or not store_path.exists()):
                 raise HTTPException(status_code=409, detail="Source has no data for the requested temporal scope")
 
@@ -1454,6 +1458,13 @@ def _create_streaming_artifact(
         rewritten = normalization.rewritten
         if plan.action != SyncAction.NO_OP and plan.has_committed_periods and not normalization.completed:
             raise RuntimeError(f"Could not normalize '{dataset['id']}'; the dataset update was rolled back")
+        if wrote_this_run:
+            # Complete now, so a rollback may publish it; a run that fails before here leaves its
+            # periods on `main` unmarked, for a retry. Only the mark: the update stands without it.
+            try:
+                seal_version(store_path, ingest_branch)
+            except Exception:
+                logger.warning("Could not mark '%s' as a complete version", store_path, exc_info=True)
         if replacement_branch is not None:
             assert repo is not None
             # Readers move from the old version to the complete new one in one step. Nothing else
@@ -1526,12 +1537,14 @@ def _create_streaming_artifact(
                     if branch is None or (rollback_error is not None and branch == rollback_branch):
                         continue  # the rollback branch still names the version to restore by hand
                     _delete_branch(repo, branch, store_path)
+            expired = rollback_error is None and repo is not None and _expire_replaced_versions(store_path)
             collected = rollback_error is None and (
-                rolled_back or replacement_branch is not None or rewritten or wrote_this_run
+                rolled_back or replacement_branch is not None or rewritten or expired or amended_periods
             )
             if collected:
-                # Still under the store lock, so nothing is mid-write. What this ingest replaced,
-                # amended away, expired or abandoned is now reachable from no branch.
+                # Still under the store lock, so nothing is mid-write. Only when something worth it
+                # became unreachable: what this ingest replaced, abandoned or expired, or the
+                # periods it amended away. A one-period sync usually leaves nothing to collect.
                 _collect_replaced_versions(store_path)
             kept_partial_append = (
                 not store_committed and not ingest_completed and replacement_branch is None and repo is not None
@@ -1618,19 +1631,34 @@ def clean_up_interrupted_ingest(store_path: Path) -> bool:
     return removed
 
 
+def _expire_replaced_versions(store_path: Path) -> bool:
+    """Drop versions older than `snapshot_retention_days` from the history; return whether any went.
+
+    Expiry keeps every branch's tip. Never raises: a failure is logged and leaves the history as
+    it was, and collection still runs.
+    """
+    try:
+        expired = expire_replaced_snapshots(open_or_create_repo(store_path))
+    except Exception:
+        logger.warning("Could not expire old snapshots in '%s'", store_path, exc_info=True)
+        return False
+    if expired:
+        logger.info("Expired %d snapshots older than the retention setting from '%s'", len(expired), store_path.name)
+    return bool(expired)
+
+
 def _collect_replaced_versions(store_path: Path) -> None:
-    """Free the versions no branch reaches any more, and those older than the retention setting.
+    """Free the data no branch reaches any more.
 
     A replaced version stays in the history of `main`, readable and a rollback target, for the
-    retention period (`snapshot_retention_days`); an abandoned one is reachable from no branch at
-    all. Expiry keeps every branch's tip. Objects written within :data:`_GC_RETENTION` are kept for
-    readers that opened them, and a pending collection frees them later. Never raises.
+    retention period (`snapshot_retention_days`); an abandoned or expired one is reachable from
+    no branch. Objects written within :data:`_GC_RETENTION` are kept for readers that opened
+    them, and a pending collection frees them later. Never raises.
     """
     try:
         repo = open_or_create_repo(store_path)
-        expire_replaced_snapshots(repo)
     except Exception:
-        logger.warning("Could not expire replaced snapshots in '%s'", store_path, exc_info=True)
+        logger.warning("Could not open '%s' to collect it", store_path, exc_info=True)
         return
     collect_unreachable_objects(repo, store_path)
     _mark_collection_pending(store_path)
@@ -1961,6 +1989,8 @@ def publish_artifact_record(artifact_id: str, snapshot_id: str | None = None) ->
     record = get_artifact_or_404(artifact_id)
     if record.format == ArtifactFormat.ICECHUNK and record.path:
         store_path = Path(record.path)
+        if not (store_path / "repo").exists():
+            raise HTTPException(status_code=409, detail=f"Artifact '{artifact_id}' has no store at {store_path}")
         try:
             publish_snapshot(store_path, snapshot_id)
         except ValueError as exc:
@@ -3120,6 +3150,8 @@ def dataset_provenance(record: ArtifactRecord) -> DatasetProvenance | None:
     input without snapshots, such as a feature collection, keeps its artifact id when refreshed,
     so whether it changed cannot be told.
     """
+    import icechunk
+
     provenance = record.provenance
     if provenance is None:
         return None
@@ -3130,11 +3162,11 @@ def dataset_provenance(record: ArtifactRecord) -> DatasetProvenance | None:
         dataset_id = str(recorded["collection_id"])
         current = current_artifacts.get(dataset_id)
         current_snapshot = (
-            read_snapshot(open_or_create_repo(Path(current.path)))
+            read_snapshot(icechunk.Repository.open(icechunk.local_filesystem_storage(current.path)))
             if current is not None
             and current.format == ArtifactFormat.ICECHUNK
             and current.path
-            and Path(current.path).exists()
+            and (Path(current.path) / "repo").exists()
             else None
         )
         changed: bool | None = None

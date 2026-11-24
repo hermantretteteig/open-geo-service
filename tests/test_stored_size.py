@@ -93,6 +93,10 @@ def test_an_icechunk_store_is_measured_by_the_chunks_it_keeps(tmp_path: Path) ->
     repo.delete_branch("published")
     assert stored_bytes(store) == size
 
+    # A store Icechunk cannot report on is measured by its files instead.
+    (store / "repo").write_bytes(b"not a repository")
+    assert stored_bytes(store) > size
+
 
 def test_a_file_is_measured_by_its_size_and_a_missing_path_counts_as_nothing(tmp_path: Path) -> None:
     parquet = tmp_path / "districts.parquet"

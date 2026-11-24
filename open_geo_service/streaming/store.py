@@ -41,6 +41,18 @@ def open_or_create_repo(store_path: Path) -> Any:
 PUBLISHED_BRANCH = "published"
 
 
+# Snapshot metadata on a version a sync or job completed, which a rollback may publish. A sync
+# that fails part way leaves its periods on `main` for a retry without it.
+COMPLETE_VERSION = {"ogs_complete": True}
+
+
+def seal_version(store_path: Path, branch: str = "main") -> None:
+    """Mark the tip of *branch* as a complete version, in place: an empty amend that adds the mark."""
+    repo = open_or_create_repo(store_path)
+    tip = next(iter(repo.ancestry(branch=branch)))
+    repo.writable_session(branch).amend(tip.message, metadata=COMPLETE_VERSION, allow_empty=True)
+
+
 def read_snapshot(repo: Any) -> str:
     """The snapshot readers see: the tip of `published`, or of `main` for a store not published yet."""
     import icechunk
@@ -65,8 +77,9 @@ def publish_snapshot(store_path: Path, snapshot_id: str | None = None) -> str | 
     """Move `published` to *snapshot_id*, or to the tip of `main`; return where it was, or None.
 
     Creates the branch the first time. An older *snapshot_id* rolls the store back; it must be
-    in the history of `main` that retention has kept. The move is conditional on the branch being
-    where it was read, so a move this process did not expect fails instead of being overwritten.
+    a complete version (see :data:`COMPLETE_VERSION`) in the history of `main` that retention has
+    kept. The move is conditional on the branch being where it was read, so a move this process
+    did not expect fails instead of being overwritten.
     """
     from open_geo_service import writer_lease
 
@@ -75,12 +88,12 @@ def publish_snapshot(store_path: Path, snapshot_id: str | None = None) -> str | 
     if snapshot_id is None:
         target = str(repo.lookup_branch("main"))
     elif any(
-        str(snapshot.id) == snapshot_id and snapshot.parent_id is not None for snapshot in repo.ancestry(branch="main")
+        str(snapshot.id) == snapshot_id and snapshot.metadata.get("ogs_complete")
+        for snapshot in repo.ancestry(branch="main")
     ):
-        # Not the repository's first snapshot, which is empty; every later one is a whole version.
         target = snapshot_id
     else:
-        raise ValueError(f"Snapshot '{snapshot_id}' is not a kept version of {store_path.name}")
+        raise ValueError(f"Snapshot '{snapshot_id}' is not a complete, kept version of {store_path.name}")
     current = published_snapshot(repo)
     if current is None:
         repo.create_branch(PUBLISHED_BRANCH, target)
