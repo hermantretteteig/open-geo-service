@@ -140,6 +140,7 @@ plugins_dir: ./plugins/
 | `extent.country_code` | No | ISO 3166-1 alpha-3 — required for WorldPop downloads |
 | `data_dir` | Yes | Directory for downloaded files and Zarr stores, resolved relative to the config file |
 | `plugins_dir` | No | Directory containing `rasters/`, `vectors/`, `processes/` and `workflows/` plugin subdirectories |
+| `snapshot_retention_days` | No | How long a raster store keeps the versions it replaced, for rollback and for readers still on them. One snapshot per sync; about 1.8 MB a day for an appending daily store, so tens of MB per dataset at the default. `0` keeps only the current version. Defaults to `30` |
 | `read_only` | No | Set `true` to refuse all state-changing requests — see [Read-only instances](#read-only-instances). Defaults to `false` |
 | `scheduler` | No | Instance-level scheduled dataset-sync configuration. See [Scheduled dataset synchronization](scheduled_sync.md) |
 

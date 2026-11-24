@@ -1385,6 +1385,7 @@ def test_create_artifact_uses_streaming_plugin_for_direct_ingest(
         "periods": ["2026-01-01", "2026-01-02", "2026-01-03"],
         "committed_periods": [],
         "branch": "main",
+        "replace": False,
     }
     assert artifact.format == ArtifactFormat.ICECHUNK
     assert artifact.path == str(store_path.resolve())

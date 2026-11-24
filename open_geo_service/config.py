@@ -270,6 +270,18 @@ def get_utc_offset() -> datetime.timedelta:
     return datetime.timedelta(hours=get_utc_offset_hours())
 
 
+def get_snapshot_retention() -> datetime.timedelta:
+    """How long a raster store keeps the versions it replaced, from ``snapshot_retention_days`` (default 30).
+
+    Within it a dataset can be rolled back, and a reader still on an older version keeps reading.
+    ``0`` keeps only the current version of each branch.
+    """
+    raw = get_config().get("snapshot_retention_days", 30)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise ValueError(f"snapshot_retention_days in GEOSERVICE_CONFIG must be a whole number >= 0, got {raw!r}")
+    return datetime.timedelta(days=raw)
+
+
 def is_read_only() -> bool:
     """Return True when the instance refuses state-changing requests.
 

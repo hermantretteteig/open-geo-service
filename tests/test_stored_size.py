@@ -176,7 +176,10 @@ def test_an_openeo_publish_records_the_size_and_statistics_of_the_store_it_wrote
 
     records = [r for r in ingestion_services._load_records() if r.dataset_id == "published_sized"]
     assert len(records) == 1 and records[0].path is not None
-    assert records[0].size_bytes == stored_bytes(records[0].path) > 0
+    # Publishing after the size is measured adds the `published` branch to Icechunk's repository
+    # file, a few hundred bytes; what matters is that the size is of the store the job wrote.
+    size = records[0].size_bytes
+    assert size is not None and 0 < size <= stored_bytes(records[0].path) < size + 2048
     assert _min_max(records[0].statistics) == (-4.0, 7.0)
 
 

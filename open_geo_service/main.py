@@ -206,12 +206,17 @@ async def _services() -> AsyncGenerator[None]:
         from open_geo_service.ingestions.services import (
             clean_up_interrupted_ingests,
             collect_pending_garbage_everywhere,
+            reconcile_published_branches,
         )
 
         try:
             clean_up_interrupted_ingests()
         except Exception:
             logger.exception("Could not clean up interrupted ingests; continuing startup")
+        try:
+            reconcile_published_branches()
+        except Exception:
+            logger.exception("Could not reconcile published branches; continuing startup")
         try:
             collect_pending_garbage_everywhere()
         except Exception:

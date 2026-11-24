@@ -212,8 +212,11 @@ def _open_zarr_group(store: Any, group: str | None, *, chunks: Any) -> xr.Datase
     return xr.open_zarr(store, group=group, zarr_format=3, chunks=chunks)  # type: ignore[no-any-return]
 
 
-def open_icechunk_dataset(store_path: str | Path, *, merge_time: bool = True, branch: str = "main") -> xr.Dataset:
-    """Open an Icechunk-backed dataset at the tip of *branch*, through a readonly session pinned to it.
+def open_icechunk_dataset(store_path: str | Path, *, merge_time: bool = True, branch: str | None = None) -> xr.Dataset:
+    """Open an Icechunk-backed dataset through a readonly session pinned to the version it opened.
+
+    Opens what readers see (``published``, or ``main`` before the first publish) unless a writer
+    names its *branch*.
 
     Dask chunks follow the stored chunks in space and merge them along time up to
     ``READ_CHUNK_TARGET_BYTES``, so computations are sized for dask rather than for storage.
@@ -227,7 +230,12 @@ def open_icechunk_dataset(store_path: str | Path, *, merge_time: bool = True, br
         raise FileNotFoundError(f"Icechunk store not found: {path}")
     storage = icechunk.local_filesystem_storage(str(path))
     repo = icechunk.Repository.open(storage)
-    session = repo.readonly_session(branch)
+    if branch is None:
+        from open_geo_service.streaming.store import read_snapshot
+
+        session = repo.readonly_session(snapshot_id=read_snapshot(repo))
+    else:
+        session = repo.readonly_session(branch)
     # Opened without dask first: it finds where the data lives (the root, or a pyramid's level
     # 0) and the stored chunk shape, before the dask chunks are chosen.
     group: str | None = None

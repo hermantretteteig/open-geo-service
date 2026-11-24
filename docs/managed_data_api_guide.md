@@ -369,8 +369,10 @@ for both.
 import icechunk, xarray as xr
 
 repo = icechunk.Repository.open(icechunk.http_storage("http://127.0.0.1:9000/icechunk/chirps3_precipitation_daily"))
-ds = xr.open_zarr(repo.readonly_session("main").store, zarr_format=3, consolidated=False)
+ds = xr.open_zarr(repo.readonly_session("published").store, zarr_format=3, consolidated=False)
 ```
+
+Open the `published` branch, which is what GeoService serves; `main` can hold a sync in progress.
 
 Both endpoints are advertised as `assets` in the STAC collection:
 
@@ -845,27 +847,46 @@ If a complete store has lost its artifact record, repeating `/ingest` reconstruc
 record from the store without querying or fetching historical source data. Recovery
 validates and normalizes the store and honors the request's publication setting.
 
-A rematerialization, and an overwrite, is built on a temporary branch of the same Icechunk
-repository. Readers keep the current version on `main` until the new one is fetched,
-validated and normalized, and `main` then moves to it in one step. A pyramid rebuild is one
-commit on the branch it rebuilds. Readers therefore always open a complete version, also
-when an ingest is killed part way: a killed ingest leaves only its temporary branches, which
-the next ingest of that store removes. If rollback itself fails, the job reports that failure
-and names the rollback branch, which still points at the version before the ingest.
+Writers commit to `main`; readers open the `published` branch, which publishing moves. Every
+reader opens it: `/zarr`, `/icechunk`, openEO, STAC, and tools outside GeoService such as GDAL
+(`ICECHUNK:<path>?branch=published`). A dataset not published yet has no `published` branch,
+and GeoService's own pages read `main` for it.
 
-A rolled-back append leaves the periods it committed unreachable, and a replaced version is
-unreachable once `main` has moved past it; Icechunk keeps both until collected. Only data that
-no branch or tag reaches is removed, so every version still reachable is kept, including the
-one published before a failed attempt.
+- **An ingest or sync** commits each period to `main` as it is fetched, as one snapshot per run:
+  later periods amend the run's first commit. When the update is complete and recorded,
+  `published` moves to it, so readers never see a sync half done. A sync that fails part way
+  keeps the periods it committed on `main` for the next attempt to resume from, and readers
+  keep the version they had.
+- **A rematerialization or an overwrite** is built on a temporary branch, from `main`, and
+  `main` moves to it in one step once it is fetched, validated and normalized. A pyramid rebuild
+  is one commit. A killed ingest leaves only its temporary branches, which the next ingest of
+  that store removes. If rollback itself fails, the job reports it and names the rollback branch,
+  which still points at the version before the ingest.
+- **Publication decides, the record follows.** Publishing moves `published` first and then marks
+  the record published, and a sync of a published dataset moves the branch with it. A writer
+  started after a crash between the two marks the record to match the branch, and gives a store
+  from before the branch existed one at the tip of `main`.
 
-Data committed in the last hour is kept as well. Readers take no lock, so a client that opened
-the dataset during a failed attempt may be reading one of its interim versions; the hour lets it
-finish. The hour counts from when data was written, not from when it was replaced: a version
-older than that, replaced by an overwrite or a pyramid rebuild, is freed at once, and a client
-still reading it, such as a long-running job, fails and has to reopen the dataset. It is a window, not a guarantee: a client still reading such an interim version more
-than an hour after it was committed can fail with "object not found", and has to reopen the
-dataset. Clients that opened the dataset before the attempt, or after the rollback, are not
-affected.
+**Versions and rollback.** Each sync leaves one snapshot in the history of `main`, and the snapshots of the last
+`snapshot_retention_days` (default 30, see the [instance guide](instance_guide.md)) are kept,
+also across an overwrite. Older ones are expired at the next update of the store. A dataset can
+be rolled back to any kept snapshot by publishing it again, on the host:
+
+```python
+from open_geo_service.ingestions.services import get_latest_artifact_for_dataset_or_404, publish_artifact_record
+
+record = get_latest_artifact_for_dataset_or_404("chirps3_precipitation_daily")
+publish_artifact_record(record.artifact_id, snapshot_id="<snapshot id>")
+```
+
+The next sync publishes the tip of `main` again. A snapshot that is not a kept version of the
+store is refused.
+
+**Collection.** A rolled-back append, an abandoned replacement and an expired snapshot leave data that no branch
+reaches, and Icechunk keeps it until collected. Only data that no branch or tag reaches is
+removed. Data committed in the last hour is kept as well, so a client that opened a version just
+before it became unreachable can finish; one still reading it after that can fail with "object
+not found" and has to reopen the dataset.
 
 Collection runs right after a rollback or a replacement, and when the next ingest finds the
 branches of a killed one. What the hour kept is marked in `<store>.gc-pending` and collected once
