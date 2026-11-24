@@ -203,8 +203,15 @@ async def _services() -> AsyncGenerator[None]:
     if not api_config.is_read_only():
         # A read-only instance may share its data directory with a writing one, so it leaves
         # the stores alone.
-        from open_geo_service.ingestions.services import collect_pending_garbage_everywhere
+        from open_geo_service.ingestions.services import (
+            clean_up_interrupted_ingests,
+            collect_pending_garbage_everywhere,
+        )
 
+        try:
+            clean_up_interrupted_ingests()
+        except Exception:
+            logger.exception("Could not clean up interrupted ingests; continuing startup")
         try:
             collect_pending_garbage_everywhere()
         except Exception:

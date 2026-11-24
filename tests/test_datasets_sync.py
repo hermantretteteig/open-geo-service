@@ -1780,6 +1780,8 @@ def test_maybe_build_pyramid_calls_write_to_icechunk_store(tmp_path: Path, monke
     written: list[tuple] = []
 
     def fake_write(ds_arg: xr.Dataset, path: Path, *a: object, **kw: object) -> None:
+        # Marked before anything is written, so a build killed part way is collected too.
+        assert path.with_name(f"{path.name}.gc-pending").exists()
         written.append((ds_arg, path))
 
     monkeypatch.setattr(downloader, "write_to_icechunk_store", fake_write)
@@ -1791,7 +1793,7 @@ def test_maybe_build_pyramid_calls_write_to_icechunk_store(tmp_path: Path, monke
     assert opened == [{"merge_time": False, "branch": "main"}]
     # One commit on the branch it read, in the same store: no copy beside it.
     assert written[0][1] == icechunk_path
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["dataset.icechunk"]
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["dataset.icechunk", "dataset.icechunk.gc-pending"]
     assert result.completed is True
     assert result.rewritten is True
 

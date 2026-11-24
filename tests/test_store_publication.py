@@ -164,17 +164,27 @@ def test_a_failed_sync_that_rebuilt_the_store_resets_main(
     assert _branches(store["path"]) == {"main"}
 
 
-def test_cleanup_that_fails_after_the_record_is_written_keeps_the_new_version(
+def test_a_branch_that_cannot_be_deleted_is_left_for_cleanup(
     store: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _ingest(store, overwrite=False)
     store["plugin"] = _ValuePlugin(2.0)
     monkeypatch.setattr(services, "_delete_branch", _raise)
 
-    artifact = _ingest(store, overwrite=True)
-
+    artifact = _ingest(store, overwrite=True)  # after the record is written: the new version stays
     assert artifact.coverage.temporal.end == DAYS[-1]
     assert _read(store["path"]) == (3, 2.0)
+
+    # During a rollback it is not a failed rollback: the update's own error is raised, `main` is
+    # restored, and the branches wait for the next cleanup.
+    store["plugin"] = _ValuePlugin(3.0)
+    monkeypatch.setattr(services, "_upsert_artifact_record", lambda *args, **kwargs: _raise())
+    with pytest.raises(OSError, match="write failed"):
+        _ingest(store, overwrite=True)
+    assert _read(store["path"]) == (3, 2.0)
+    monkeypatch.undo()
+    assert services.clean_up_interrupted_ingest(store["path"])
+    assert _branches(store["path"]) == {"main"}
 
 
 _KILLED_OVERWRITE = """
@@ -220,7 +230,9 @@ services.create_artifact(
 """
 
 
-def test_a_killed_overwrite_leaves_the_store_readable(store: dict[str, Any], tmp_path: Path) -> None:
+def test_a_killed_overwrite_leaves_the_store_readable(
+    store: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A process killed part way runs none of its cleanup; readers still open a whole version."""
     _ingest(store, overwrite=False)
     marker = tmp_path / "fetching"
@@ -241,10 +253,18 @@ def test_a_killed_overwrite_leaves_the_store_readable(store: dict[str, Any], tmp
     assert _read(store["path"]) == (3, 1.0)
     assert any(branch.startswith("ogs-ingest-replacement-") for branch in _branches(store["path"]))
 
-    store["plugin"] = _ValuePlugin(2.0)
-    _ingest(store, overwrite=True)  # removes what the killed one left, then runs
-    assert _read(store["path"]) == (3, 2.0)
+    # The next writer's startup cleans up, also for a store that is never ingested again, and
+    # moves the collection to start then, after everything the killed process wrote.
+    marker = store["path"].with_name("tg.icechunk.gc-pending")
+    marker.write_text("2000-01-01T00:00:00+00:00")
+    monkeypatch.setattr(downloader, "DOWNLOAD_DIR", store["path"].parent)
+    assert services.clean_up_interrupted_ingests() == 1
     assert _branches(store["path"]) == {"main"}
+    assert marker.read_text() > "2026", "the pending collection starts at startup"
+
+    store["plugin"] = _ValuePlugin(2.0)
+    _ingest(store, overwrite=True)
+    assert _read(store["path"]) == (3, 2.0)
 
 
 def _raise(*args: object, **kwargs: object) -> Any:

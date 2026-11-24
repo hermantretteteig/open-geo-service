@@ -1448,10 +1448,10 @@ def _create_streaming_artifact(
             raise RuntimeError(f"Could not normalize '{dataset['id']}'; the dataset update was rolled back")
         if replacement_branch is not None:
             assert repo is not None
-            # Readers move from the old version to the complete new one in one step. Conditional
-            # on `main` being where this ingest found it, so a write this process did not expect
-            # fails here instead of being overwritten.
-            repo.reset_branch("main", repo.lookup_branch(replacement_branch), from_snapshot_id=rollback_snapshot)
+            # Readers move from the old version to the complete new one in one step. Nothing else
+            # moves `main` meanwhile: the writer lease keeps other processes out and the store lock
+            # other ingests, which is also what lets a failure reset it below.
+            repo.reset_branch("main", repo.lookup_branch(replacement_branch))
         # Once per sync run, here rather than per commit: a streaming ingest commits one
         # period at a time, so rendering on each would produce a few hundred PNGs during a
         # historical backfill and keep the last. After `main` has moved, so it renders the version
@@ -1495,22 +1495,21 @@ def _create_streaming_artifact(
                     logger.warning("Could not close ingestion plugin after planning failure", exc_info=True)
             rolled_back = False
             if repo is not None and rollback_snapshot is not None:
-                try:
-                    rolled_back = not store_committed and ingest_completed
-                    if rolled_back:
+                rolled_back = not store_committed and ingest_completed
+                if rolled_back:
+                    try:
                         repo.reset_branch("main", rollback_snapshot)
-                    for branch in (rollback_branch, replacement_branch):
-                        if branch is not None:
-                            _delete_branch(repo, branch)
-                except Exception as exc:
-                    if not store_committed:
+                    except Exception as exc:
                         rollback_error = exc
-                    logger.error(
-                        "Could not %s the update of '%s'",
-                        "roll back" if not store_committed else "clean up after",
-                        store_path,
-                        exc_info=True,
-                    )
+                        logger.error("Could not roll back the update of '%s'", store_path, exc_info=True)
+                for branch in (rollback_branch, replacement_branch):
+                    if branch is None or (rollback_error is not None and branch == rollback_branch):
+                        continue  # the rollback branch still names the version to restore by hand
+                    try:
+                        _delete_branch(repo, branch)
+                    except Exception:
+                        # Left for the next cleanup (`clean_up_interrupted_ingest`), which removes it.
+                        logger.warning("Could not delete branch '%s' of '%s'", branch, store_path, exc_info=True)
             if rollback_error is None and (rolled_back or replacement_branch is not None or rewritten):
                 # Still under the store lock, so nothing is mid-write. The version this ingest
                 # replaced, or the one it abandoned, is now reachable from no branch.
@@ -1681,6 +1680,31 @@ def collect_pending_garbage(store_path: Path) -> bool:
     return True
 
 
+def clean_up_interrupted_ingests() -> int:
+    """Clean up after every ingest a previous process left part way; return how many stores changed.
+
+    Run by the writer at startup, so a store that is never ingested again is cleaned up too: a
+    killed overwrite's branches, and what a killed pyramid build wrote. Nothing of the previous
+    process is still writing, so a pending collection is moved to start now, which covers whatever
+    it wrote after marking. A store an ingest already holds is skipped.
+    """
+    directory = Path(downloader.DOWNLOAD_DIR)
+    if not directory.is_dir():
+        return 0
+    changed = 0
+    for store_path in directory.glob("*.icechunk"):
+        lock = _acquire_store_lock(store_path)
+        if not lock.acquire(blocking=False):
+            continue
+        try:
+            if _collection_marker(store_path).exists():
+                _mark_collection_pending(store_path)
+            changed += clean_up_interrupted_ingest(store_path)
+        finally:
+            lock.release()
+    return changed
+
+
 def collect_pending_garbage_everywhere() -> int:
     """Run every collection that is due, skipping a store an ingest holds; returns how many ran.
 
@@ -1785,6 +1809,11 @@ def _maybe_build_pyramid(
         # `ds` reads lazily from the version the branch held, which the commit leaves as it was.
         # Lazy rather than loaded: the whole store is 3.47 GB for Uganda's GPP. Until the old
         # version is collected it costs disk instead, as one extra copy.
+        #
+        # Marked before the build, so what it writes is collected even if it is killed part way:
+        # chunks no snapshot references, which nothing else would collect on a first ingest. A
+        # failure marks again once it has stopped writing; after a kill, the writer's startup does.
+        _mark_collection_pending(store_path)
         try:
             downloader.write_to_icechunk_store(
                 ds,
@@ -1795,8 +1824,6 @@ def _maybe_build_pyramid(
                 branch=branch,
             )
         except Exception:
-            # A failed build leaves the chunks it wrote, which no snapshot references. Nothing
-            # else would collect them on a first ingest, and the failure may be a full disk.
             _mark_collection_pending(store_path)
             raise
     except Exception:
