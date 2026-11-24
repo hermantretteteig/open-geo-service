@@ -37,8 +37,9 @@ the recovered job finds the data current and still emits the event it owed, exac
 
 The event says what changed: `dataset_id`, `artifact_id`, `action` (`ingest`, the sync
 planner's `append` or `rematerialize`, or `full_rewrite` for a dataset an openEO job
-published), `previous_end` (the coverage end before the update, or `null` when the whole store
-is new or rewritten), and `current_start` and `current_end` (the coverage after it). A pipeline
+published), `previous_end` (the coverage end before the update; when a sync replaced preliminary
+periods with final values, the period before the first of them; `null` when the whole store is
+new or rewritten), and `current_start` and `current_end` (the coverage after it). A pipeline
 runs the interval the update affected; a recipe always recomputes the whole coverage.
 
 ## Updates from derived datasets

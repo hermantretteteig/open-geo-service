@@ -748,12 +748,13 @@ def _decided(record: PipelineRecord, event_id: str, event_time: str | None) -> b
 def update_interval(data: dict[str, Any]) -> tuple[str, str, Literal["appended", "rewritten"]] | None:
     """The interval a dataset update affects, from the update's own description of itself.
 
-    An append (``previous_end`` set) added the periods after ``previous_end`` and left the
+    An append (``previous_end`` set) changed the periods after ``previous_end`` and left the
     earlier ones as they were: the run covers ``previous_end`` to ``current_end``, re-sending
-    the last period already stored, so an overwrite at the destination completes it. A
-    rewrite (``previous_end`` null: a new store or a rematerialization) may have changed any
-    period, so the run covers the whole coverage after it. Updates do not describe a
-    correction of individual stored periods; there is none for a pipeline to follow.
+    the last period already stored, so an overwrite at the destination completes it. A sync
+    that replaced preliminary periods with final ones sets ``previous_end`` before the first
+    of them, so the run carries the final values on. A rewrite (``previous_end`` null: a new
+    store or a rematerialization) may have changed any period, so the run covers the whole
+    coverage after it.
     """
     end = data.get("current_end")
     previous = data.get("previous_end")

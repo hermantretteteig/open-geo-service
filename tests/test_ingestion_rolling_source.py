@@ -11,9 +11,10 @@ import xarray as xr
 import zarr
 
 from open_geo_service.data_accessor.services.accessor import open_icechunk_dataset
-from open_geo_service.ingestions import services, sync_engine
+from open_geo_service.ingestions import processes, services, sync_engine
 from open_geo_service.ingestions.schemas import ArtifactVersion, CoverageTemporal, SyncAction
 from open_geo_service.openeo import execution as openeo_execution
+from open_geo_service.pipelines import runner
 from open_geo_service.shared.provisional import FETCHED_AT
 from open_geo_service.streaming import BaseDatasetPlugin, normalize_period, orchestrator
 from open_geo_service.streaming.store import read_fetched_at
@@ -295,6 +296,11 @@ def _sync(end: str) -> services.SyncResponse:
     return services.sync_dataset(dataset_id="rolling_precip", end=end, publish=False)
 
 
+def _pipeline_runs(response: services.SyncResponse) -> list[tuple[str, str, str] | None]:
+    """The interval a pipeline following the dataset runs for each update event the sync emits."""
+    return [runner.update_interval(event.data) for event in processes.sync_update_events("rolling_precip", response)]
+
+
 def _stored(store_path: Path) -> tuple[list[float], list[datetime | None]]:
     with open_icechunk_dataset(store_path) as stored:
         values = stored["precip"][:, 0, 0].values.tolist()
@@ -327,6 +333,7 @@ def test_a_preliminary_period_is_fetched_again_once_after_its_final_version_is_e
     response = _sync("2026-01-02")
     assert response.status == "up_to_date"
     assert response.sync_detail is not None and response.sync_detail.action == SyncAction.NO_OP
+    assert _pipeline_runs(response) == []
     # The window is read from the template at sync time, so shortening it makes a period due
     # without anything written to the store.
     dataset["sync"] = {**cast(dict[str, object], dataset["sync"]), "refresh_after": "P9D"}
@@ -348,6 +355,9 @@ def test_a_preliminary_period_is_fetched_again_once_after_its_final_version_is_e
     assert _stored(store_path) == ([101.0, 2.0], [refreshed_at, ingested_at])
     assert response.dataset is not None
     assert [p.period for p in response.dataset.provisional_periods] == ["2026-01-02"]
+    # A pipeline following the dataset reruns from the replaced day, so its final value reaches
+    # the destination: from the day before, as for an append, which re-sends the last kept period.
+    assert _pipeline_runs(response) == [("2025-12-31", "2026-01-02", "appended")]
 
     # A sync skipped past the second day's maturity still replaces it at the next one, in the
     # same sync as a new day is added.
@@ -361,6 +371,7 @@ def test_a_preliminary_period_is_fetched_again_once_after_its_final_version_is_e
     )
     assert _stored(store_path) == ([101.0, 102.0, 103.0], [refreshed_at, later, later])
     assert response.dataset is not None and response.dataset.provisional_periods == []
+    assert _pipeline_runs(response) == [("2026-01-01", "2026-01-03", "appended")]
     # Chunked as `t`, rechunked at the end of each sync, so the refresh and the append above
     # wrote into a chunk of several periods, and the planner reads the array in few requests.
     root = zarr.open_group(services.open_or_create_repo(store_path).readonly_session("main").store, mode="r")

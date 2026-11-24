@@ -274,17 +274,19 @@ so a delivery the framework had already reserved is found rather than sent twice
 **Dataset updates.** An update describes itself in one of two ways, and a run covers what it
 says changed, not the dataset's whole coverage:
 
-- an *append* (`previous_end` set) added the periods after `previous_end` and kept the earlier
+- an *append* (`previous_end` set) changed the periods after `previous_end` and kept the earlier
   ones as they were. The run covers `previous_end` to `current_end`, re-sending the last period
   already stored, an overwrite at the destination;
 - a *rewrite* (`previous_end` empty: a new store or a rematerialisation) may have changed any
   period, so the run covers the whole coverage after it, `current_start` to `current_end`.
 
-The run records which (`source.update`). Updates do not describe a correction of individual
-stored periods: Open Geo Service has no such update, so a pipeline cannot follow a revision of past data at
-the source (for example a provisional value replaced by a final one) unless the dataset is
-rematerialised. Run that interval by hand. The interval's ends are passed to the workflow as the
-updates give them.
+The run records which (`source.update`). A sync that replaces preliminary periods with final
+values (see [Preliminary periods](zarr_and_geozarr.md#preliminary-periods)) is an append whose
+`previous_end` lies before the first replaced period, so the run carries the final values to
+the destination. It covers every period from there to `current_end`, including those in between
+that did not change. Any other revision of past data at the source is followed only if the
+dataset is rematerialised; run that interval by hand. The interval's ends are passed to the
+workflow as the updates give them.
 
 Each pipeline keeps a durable checkpoint of the updates it has decided on, written in the same
 write as the run an update starts. What happens to an update:
